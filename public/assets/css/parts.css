@@ -1,0 +1,101 @@
+/* PARTS – styles for the reusable pieces in src/parts/ (shared by every client site).
+   They use the design tokens each client's site.css defines:
+   --accent --accent-dark --ink --ink-soft --line --wash --head --body
+   Prefer changing tokens in site.css over editing this file. */
+
+.sr, .skip:not(:focus) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip:focus { position: fixed; top: .5rem; left: .5rem; z-index: 100; background: #fff; padding: .75rem 1rem; }
+.sr-focus:not(:focus):not(:focus-visible) { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Testing banner (testing link + editor preview only) */
+.preview-bar { background: #fff4c2; color: #4a3b00; text-align: center; font-size: .95rem; padding: .5rem 1rem; border-bottom: 1px solid #e6d27a; }
+.preview-bar a { color: inherit; font-weight: 600; }
+.preview-bar__hide { margin-left: .75rem; font: inherit; font-weight: 600; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 4px; padding: .15rem .6rem; cursor: pointer; }
+.preview-bar__hide:hover { background: rgba(0,0,0,.06); }
+.preview-hidden .preview-bar { display: none; }
+
+/* Homepage slideshow */
+.hero { position: relative; min-height: min(88vh, 760px); display: grid; place-items: center; overflow: hidden; background: #3b3b3b; color: #fff; }
+.hero__slides, .hero__slide { position: absolute; inset: 0; }
+.hero__slide { opacity: 0; }
+.hero--fade .hero__slide { transition: opacity 1.2s ease; }
+.hero__slide.is-active { opacity: 1; }
+.hero--slide .hero__slide { opacity: 1; transform: translateX(100%); }
+.hero--slide .hero__slide.is-active { transform: translateX(0); transition: transform 1s ease-in-out; }
+.hero--slide .hero__slide.is-leaving { transform: translateX(-100%); transition: transform 1s ease-in-out; }
+.hero__slide img { width: 100%; height: 100%; object-fit: cover; }
+.hero__slides::after { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.28); }
+.hero__text { position: relative; z-index: 1; text-align: center; padding: 2rem 1.25rem; text-shadow: 0 1px 12px rgba(0,0,0,.45); }
+.hero h1 { color: #fff; font-size: clamp(2rem, 7vw, 2.75rem); margin: 0 0 .75rem; }
+.hero__text p { font: 500 clamp(1rem, 3.6vw, 1.2rem) var(--head); margin: 0 0 1.5rem; }
+.hero__actions { display: flex; flex-wrap: wrap; justify-content: center; gap: .75rem; text-shadow: none; }
+.hero__pause.sr-focus:focus { position: absolute; z-index: 2; right: 1rem; bottom: 1rem; border-radius: 4px; padding: .6rem 1rem; font: 600 .9rem var(--body); color: #fff; background: rgba(0,0,0,.7); border: 2px solid #fff; }
+
+/* Review cards */
+.tcard { padding: 0 0 1.5rem; }
+.tcard__meta { display: flex; gap: .75rem; font-size: .85rem; color: var(--ink-soft); margin: 0 0 .4rem; }
+.tcard__meta span { font-weight: 600; color: var(--ink); }
+.tcard__title { font: 600 1.05rem/1.35 var(--body); margin: 0 0 .75rem; }
+.tcard__title a { color: var(--ink); text-decoration: none; }
+.tcard__title a:hover { text-decoration: underline; }
+.tcard blockquote { margin: 0 0 .75rem; color: var(--ink-soft); line-height: 1.7; }
+.tcard blockquote p { margin: 0; }
+.tcard__more { display: inline-block; font: 700 .8rem var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--ink); text-decoration: none; padding: .6rem 0; }
+.tcard__more:hover { color: var(--accent); }
+.tgrid { display: grid; gap: 1.5rem 2.5rem; }
+@media (min-width: 700px) { .tgrid { grid-template-columns: 1fr 1fr; } }
+.tquote { margin: 0 0 2rem; font-size: 1.2rem; line-height: 1.7; border-left: 4px solid var(--accent); padding-left: 1.25rem; }
+.tquote footer { font-size: 1rem; color: var(--ink-soft); display: flex; gap: .75rem; flex-wrap: wrap; }
+.tquote footer strong { color: var(--ink); }
+
+/* Swipe row (fallback when JS is off) */
+.carousel__track { display: grid; grid-auto-flow: column; grid-auto-columns: 100%; gap: 2rem; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.carousel__track::-webkit-scrollbar { display: none; }
+.carousel__track > * { scroll-snap-align: start; }
+@media (min-width: 700px) { .carousel__track { grid-auto-columns: calc((100% - 2rem) / 2); } }
+@media (min-width: 1000px) { .carousel__track { grid-auto-columns: calc((100% - 4rem) / 3); } }
+.carousel__dots { display: flex; justify-content: center; gap: .25rem; margin: 1.5rem 0 2rem; }
+.carousel__dots button { width: 32px; height: 32px; border: 0; background: none; cursor: pointer; display: grid; place-items: center; padding: 0; }
+.carousel__dots button::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--ink); }
+.carousel__dots button[aria-current="true"]::before { background: var(--ink); }
+
+/* Reviews drifting sideways (JS adds .is-marquee). Moved by a transform (smooth on phones). */
+.reviews-row { padding: 3.5rem 0; }
+.carousel.is-marquee .carousel__dots { display: none; }
+.carousel.is-marquee .carousel__track { display: block; overflow: hidden; touch-action: pan-y; padding: .25rem 0; cursor: grab; user-select: none; -webkit-user-select: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 7%, #000 93%, transparent 100%); mask-image: linear-gradient(90deg, transparent 0, #000 7%, #000 93%, transparent 100%); }
+.carousel.is-marquee.is-dragging .carousel__track { cursor: grabbing; }
+.carousel__track:focus-visible { outline-offset: 6px; }
+.marquee__inner { display: flex; gap: 2.5rem; width: max-content; will-change: transform; }
+.marquee__inner > * { flex: 0 0 min(82vw, 380px); }
+@media (max-width: 699px) {
+  .marquee__inner { gap: 1.5rem; }
+  .marquee__inner > * { flex-basis: 74vw; }
+  .carousel.is-marquee .tcard blockquote { font-size: .95rem; line-height: 1.6; }
+  .carousel.is-marquee .tcard__title { font-size: 1rem; }
+}
+.marquee-pause { display: block; margin: 1.25rem auto 1.5rem; min-height: 44px; padding: .5rem 1.1rem; border: 1px solid var(--ink); background: #fff; color: var(--ink); font: 600 .8rem/1 var(--body); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+.marquee-pause[hidden] { display: none; }
+
+/* Fade in on scroll (add data-reveal to a <section>) */
+.reveal-ready [data-reveal] > * > * { opacity: 0; transform: translateY(28px); transition: opacity 1s ease, transform 1s ease; }
+.reveal-ready [data-reveal] > * > *:nth-child(2) { transition-delay: .2s; }
+.reveal-ready [data-reveal] > * > *:nth-child(n+3) { transition-delay: .4s; }
+.reveal-ready [data-reveal].is-revealed > * > * { opacity: 1; transform: none; }
+
+/* Contact form */
+.cform { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); text-align: left; }
+.cform__title { font-size: 1.1rem; margin: 0 0 .75rem; }
+.cform__field { margin-bottom: .75rem; }
+.cform__field label { display: block; font-weight: 600; margin-bottom: .25rem; }
+.cform__opt { font-weight: 400; color: var(--ink-soft); }
+.cform input, .cform textarea { width: 100%; box-sizing: border-box; font: inherit; padding: .65rem .75rem; border: 1px solid #bbb; border-radius: 3px; background: #fff; }
+.cform input:focus, .cform textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.cform__send { width: 100%; }
+.cform__send[disabled] { opacity: .55; cursor: not-allowed; }
+.cform__trap { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.cform__status:empty { display: none; }
+.cform__status { margin: .75rem 0 0; font-weight: 600; text-align: left; }
+.cform__status.is-ok { color: #1b6e2f; }
+.cform__status.is-bad { color: #a11; }
+.cform__note { background: #fff4c2; padding: .5rem .75rem; font-size: .95rem; }

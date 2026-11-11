@@ -1,0 +1,24 @@
+{
+  "_comment": "Client reviews, copied word for word from the client's current site (or added by the owner in the editor). Never write or reword a client's words. 'excerptOnly: true' = the old site only showed a cut-off part.",
+  "items": [
+    {
+      "slug": "example-review",
+      "title": "Example review \u2013 replace",
+      "client": "A.B.",
+      "date": "2026-01-15",
+      "text": [
+        "Replace with a real review copied word for word from the client's current website."
+      ]
+    },
+    {
+      "slug": "second-example-review",
+      "title": "Second example review \u2013 replace",
+      "client": "C.D.",
+      "date": "2025-11-02",
+      "excerptOnly": true,
+      "text": [
+        "Replace with another real review. This one shows how a cut-off excerpt is marked."
+      ]
+    }
+  ]
+}

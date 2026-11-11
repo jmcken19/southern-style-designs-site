@@ -1,0 +1,78 @@
+/* STARTER DESIGN – replace with the client's own look during the rebuild (docs/PLAYBOOK.md step 3).
+   Match their current site: colors, fonts, spacing, header/footer. Keep the @import and the tokens. */
+@import url("parts.css");
+@font-face { font-family: "Source Sans Pro"; font-weight: 400; font-display: swap; src: url(../fonts/source-sans-pro-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "Source Sans Pro"; font-weight: 600; font-display: swap; src: url(../fonts/source-sans-pro-latin-600-normal.woff2) format("woff2"); }
+@font-face { font-family: "Source Sans Pro"; font-weight: 700; font-display: swap; src: url(../fonts/source-sans-pro-latin-700-normal.woff2) format("woff2"); }
+
+:root {
+  /* Design tokens (used by parts.css too) */
+  --accent: #1f5fbf;
+  --accent-dark: #174a94;
+  --ink: #1f2a44;
+  --ink-soft: #4d566a;
+  --line: #e2e4ea;
+  --wash: #f4f5f8;
+  --head: "Source Sans Pro", system-ui, sans-serif;
+  --body: "Source Sans Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --wrap: 1140px;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; font: 400 1.125rem/1.6 var(--body); color: var(--ink); background: #fff; }
+img { max-width: 100%; height: auto; display: block; }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:hover { color: var(--accent-dark); }
+:focus-visible { outline: 3px solid #1d5fc4; outline-offset: 2px; }
+h1, h2, h3 { font-family: var(--head); font-weight: 700; line-height: 1.2; }
+h1 { font-size: clamp(1.8rem, 5vw, 2.4rem); margin: 0 0 1rem; }
+h2 { font-size: 1.5rem; margin: 2rem 0 .75rem; }
+p { margin: 0 0 1rem; }
+.wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 1.25rem; }
+.center { text-align: center; }
+.section { padding: 3rem 0; }
+.section-title { text-align: center; margin: 0 0 2rem; }
+.prose { max-width: 70ch; }
+.intro { padding: 4rem 0; background: var(--wash); text-align: center; }
+
+/* Header + menu */
+.site-header { border-bottom: 1px solid var(--line); background: #fff; }
+.site-header__in { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: 1rem; padding-bottom: 1rem; flex-wrap: wrap; }
+.brand { text-decoration: none; color: var(--ink); }
+.brand__name { font: 700 1.35rem var(--head); }
+.menu-btn { min-height: 48px; padding: 0 1rem; border: 1px solid var(--line); background: #fff; border-radius: 4px; font: 600 1rem var(--body); cursor: pointer; }
+.site-nav { flex-basis: 100%; display: none; }
+.site-nav.is-open, .no-js .site-nav { display: block; }
+.site-nav ul { list-style: none; margin: 0; padding: 0; }
+.site-nav a { display: block; padding: .85rem .25rem; color: var(--ink); text-decoration: none; border-top: 1px solid var(--line); font-weight: 600; }
+.site-nav a[aria-current="page"] { color: var(--accent); }
+@media (min-width: 900px) {
+  .site-header__in { flex-wrap: nowrap; }
+  .menu-btn { display: none; }
+  .site-nav { display: block; flex-basis: auto; }
+  .site-nav ul { display: flex; gap: .25rem; }
+  .site-nav a { border: 0; padding: .6rem .9rem; }
+}
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .75rem 1.5rem; border: 2px solid var(--ink); background: #fff; color: var(--ink); font: 700 .95rem/1.2 var(--body); text-decoration: none; border-radius: 4px; cursor: pointer; }
+.btn:hover { background: var(--ink); color: #fff; }
+.btn--accent { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--accent:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff; }
+
+/* Inner pages */
+.page { padding-top: 2.5rem; padding-bottom: 4rem; }
+.with-side { display: grid; gap: 2.5rem; }
+@media (min-width: 1000px) { .with-side { grid-template-columns: minmax(0, 1fr) 320px; gap: 4rem; } }
+.kicker { font-weight: 600; }
+.headshot { width: 240px; aspect-ratio: 360 / 420; object-fit: cover; object-position: 50% 20%; border-radius: 4px; margin: 0 0 1.5rem; }
+.ask { align-self: start; background: var(--wash); padding: 1.5rem; border-top: 4px solid var(--accent); display: grid; gap: .75rem; }
+.ask__title { margin: 0; text-align: center; font-size: 1.4rem; }
+.contact-form { max-width: 560px; }
+
+/* Footer */
+.site-footer { background: var(--ink); color: #fff; padding: 2.5rem 0; text-align: center; }
+.site-footer a { color: #fff; }
+.site-footer p { margin: 0 0 .4rem; }
+.site-footer__name { font-weight: 700; font-size: 1.15rem; }
+.site-footer__small { opacity: .8; font-size: .9rem; margin-top: 1rem !important; }

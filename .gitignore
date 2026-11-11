@@ -1,0 +1,32 @@
+node_modules/
+dist/
+dist-prod/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+screenshots/
+
+# Impeccable (design skill in .claude/skills/impeccable). Engine binaries download per machine;
+# per-developer settings and caches stay local. .impeccable/config.json and surface briefs ARE committed.
+.claude/settings.local.json
+.claude/skills/impeccable/scripts/bin/
+.claude/skills/impeccable/scripts/config.json
+.impeccable/config.local.json
+.impeccable/history/
+.impeccable/live/
+.impeccable/critique/
+.impeccable/provider-smoke/
+**/.impeccable/hook.cache.json
+**/.impeccable/hook.pending.json
+.impeccable-live.json
+.impeccable-live/
+.demo-data/
+
+# Design skills fetched by npm run skills:design (pinned, too big to commit – see docs/SKILLS.md)
+.claude/skills/taste-skill/
+.claude/skills/img2threejs/
+# playwright-cli session files and the cloud-only sandbox setting
+.playwright/
+.playwright-cli/
+.taste-skill/

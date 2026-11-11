@@ -1,0 +1,21 @@
+{
+  "_comment": "Business details + what the owner edits in the editor (heroSlides…, photos). Copy wording from the client's current site – never invent facts.",
+  "name": "Example Business",
+  "legalName": "Example Business LLC",
+  "tagline": "Replace with the tagline from the client's current site",
+  "metaDescription": "Replace with a one-sentence description of the business.",
+  "phone": "(555) 555-0100",
+  "email": "owner@example.com",
+  "address": "",
+  "hours": "",
+  "homeIntro": ["Replace with the intro text from the client's current homepage."],
+  "aboutTitle": "About",
+  "about": ["Replace with the client's About text (their words)."],
+  "contactFormTo": "owner@example.com",
+  "heroSlides": [
+    { "id": "s-hero1", "src": "/assets/img/hero-1", "alt": "Replace with a description of the photo", "focus": "50% 50%" }
+  ],
+  "heroSlideSeconds": 7,
+  "heroFade": false,
+  "heroAutoplay": true
+}

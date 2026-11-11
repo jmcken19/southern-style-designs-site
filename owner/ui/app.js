@@ -1,0 +1,1752 @@
+// Owner website editor (laptop). Lets the business owner change website photos and reviews.
+// Plain JavaScript, no build step. All saving happens on the server, which checks
+// sign-in on every request; this file only shows screens and sends what the owner typed.
+'use strict';
+
+const app = document.getElementById('app');
+const toastEl = document.getElementById('toast');
+let me = null;
+let unsavedGuard = null; // function returning true when there is unsaved typing
+// Browser storage keys (a client repo may give them its own prefix).
+const KEYS = { page: 'editor-page', device: 'editor-device', pub: 'site-publishing' };
+
+/* ---------------- small helpers ---------------- */
+
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (n) => (n == null ? '' : '$' + Number(n).toLocaleString('en-US'));
+const STATUS = { active: 'For Sale', pending: 'Pending', sold: 'Sold' };
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode: fine */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+};
+
+// Short messages. On the edit-on-the-page screen they appear in the Publish bar (#flash), never over the page.
+function toast(msg, ms = 6000) {
+  clearTimeout(toast.t);
+  const flash = document.getElementById('flash');
+  const el = flash || toastEl;
+  if (flash) toastEl.hidden = true;
+  el.textContent = msg; el.hidden = false;
+  toast.t = setTimeout(() => { el.hidden = true; el.textContent = ''; }, ms);
+}
+toast.clear = () => { clearTimeout(toast.t); toastEl.hidden = true; const f = document.getElementById('flash'); if (f) { f.hidden = true; f.textContent = ''; } };
+
+// Saves that are still on their way (uploads, settings, reviews). Publish and Undo all wait for them.
+const busy = { n: 0, subs: new Set() };
+const busyChanged = () => busy.subs.forEach((f) => f());
+async function busyWhile(fn) {
+  busy.n++; busyChanged();
+  try { return await fn(); } finally { busy.n--; busyChanged(); }
+}
+
+class ApiError extends Error { constructor(status, data) { super(data?.error || 'Something went wrong.'); this.status = status; this.data = data || {}; } }
+
+// { free: true } = don't count this call as "a save in flight" (Publish / Undo all count themselves).
+async function api(method, path, body, { idem = null, free = false } = {}) {
+  if (method === 'GET' || free) return apiCall(method, path, body, idem);
+  return busyWhile(() => apiCall(method, path, body, idem));
+}
+
+async function apiCall(method, path, body, idem) {
+  const headers = { 'X-Site-Editor': '1' };
+  if (idem) headers['Idempotency-Key'] = idem;
+  let payload = body;
+  if (body && !(body instanceof FormData)) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(body); }
+  let res;
+  try {
+    res = await fetch('/api' + path, { method, headers, body: payload, credentials: 'same-origin', cache: 'no-store' });
+  } catch {
+    throw new ApiError(0, { error: 'No internet connection right now. Nothing was lost — try again when you have signal.' });
+  }
+  if (res.redirected || (res.headers.get('content-type') || '').includes('text/html')) {
+    throw new ApiError(401, { error: 'You were signed out. Click "Sign in again" — your typing stays on this page.', signIn: true });
+  }
+  let data = {};
+  try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok) throw new ApiError(res.status, data);
+  return data;
+}
+
+function errorNote(err) {
+  const signIn = err.data?.signIn ? ' <a class="btn btn--small" href="/" target="_blank" rel="noopener">Sign in again</a>' : '';
+  const reload = err.data?.conflict ? ' <button type="button" class="btn btn--small" data-reload>Reload latest</button>' : '';
+  return `<div class="note note--bad" role="alert"><p>${esc(err.message)}</p>${signIn || reload ? `<p>${signIn}${reload}</p>` : ''}</div>`;
+}
+
+function supportLine() {
+  const s = me?.support || {};
+  const bits = [];
+  if (s.phone) bits.push(`call or text <a href="tel:${esc(s.phone)}">${esc(s.phone)}</a>`);
+  if (s.email) bits.push(`email <a href="mailto:${esc(s.email)}">${esc(s.email)}</a>`);
+  return bits.length ? `${esc(s.name || 'your website helper')}: ${bits.join(' or ')}` : esc(s.name || 'your website helper');
+}
+
+/** One short help contact for tight spaces: "Name, 555-0100" (or the email when there is no phone). */
+function supportShort() {
+  const s = me?.support || {};
+  const how = s.phone ? `<a href="tel:${esc(s.phone)}">${esc(s.phone)}</a>` : s.email ? `<a href="mailto:${esc(s.email)}">${esc(s.email)}</a>` : '';
+  return `${esc(s.name || 'your website helper')}${how ? ', ' + how : ''}`;
+}
+
+function confirmBox({ title, body, yes, no = 'Cancel', danger = false, safeDefault = false }) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.innerHTML = `<h2>${esc(title)}</h2><p>${body}</p><div class="dialog__btns"><button class="btn ${danger ? 'btn--danger' : 'btn--primary'}" value="yes">${esc(yes)}</button><button class="btn" value="no">${esc(no)}</button></div>`;
+    document.body.appendChild(d);
+    d.addEventListener('click', (e) => { const v = e.target.closest('button')?.value; if (v) { d.close(); resolve(v === 'yes'); d.remove(); } });
+    d.addEventListener('cancel', () => { resolve(false); d.remove(); });
+    d.showModal();
+    if (safeDefault) d.querySelector('button[value=no]').focus(); // Enter alone never says yes
+  });
+}
+
+/** A question with several answers (big buttons, first = the main one). Resolves with the chosen value, or null (Escape). */
+function choiceBox({ title, body, choices }) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.innerHTML = `<h2>${esc(title)}</h2><p>${body}</p><div class="dialog__btns">${choices.map((c) => `<button class="btn ${c.kind === 'primary' ? 'btn--primary' : c.kind === 'danger' ? 'btn--danger' : ''}" value="${esc(c.value)}">${esc(c.label)}</button>`).join('')}</div>`;
+    document.body.appendChild(d);
+    d.addEventListener('click', (e) => { const v = e.target.closest('button')?.value; if (v) { d.close(); resolve(v); d.remove(); } });
+    d.addEventListener('cancel', () => { resolve(null); d.remove(); });
+    d.showModal();
+  });
+}
+
+/** Short numbered directions shown at the top of each screen. */
+function how(steps) {
+  return `<div class="how"><p class="how__title">How this works</p><ol>${steps.map((x) => `<li>${x}</li>`).join('')}</ol></div>`;
+}
+
+function setScreen(html) {
+  app.innerHTML = html;
+  app.focus({ preventScroll: true });
+  window.scrollTo(0, 0);
+}
+
+/** Photo thumbnails show the chosen "focus". Set through the style object: the editor's CSP blocks style="…". */
+function applyFocus(root) {
+  root.querySelectorAll('img[data-pos]').forEach((img) => { img.style.objectPosition = img.dataset.pos; });
+}
+
+// Escape closes the side panel – but never while a confirm box is open (Escape closes that box first).
+let escHandler = null;
+function onEscape(e) {
+  if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]') || !escHandler) return;
+  // Claim the key: otherwise the browser's own Escape handling would at once close the "Leave without saving?" box we open.
+  e.preventDefault();
+  const h = escHandler; setTimeout(() => h(e), 0);
+}
+document.addEventListener('keydown', onEscape);
+
+/* ---------------- photo processing (in the browser) ---------------- */
+
+let heicLib = null;
+function loadHeic() {
+  if (heicLib) return heicLib;
+  heicLib = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/vendor/heic2any.min.js';
+    s.onload = () => (window.heic2any ? resolve(window.heic2any) : reject(new Error('heic')));
+    s.onerror = () => reject(new Error('heic'));
+    document.head.appendChild(s);
+  });
+  return heicLib;
+}
+
+function looksHeic(file) { return /heic|heif/i.test(file.type) || /\.(heic|heif)$/i.test(file.name || ''); }
+
+async function decode(file) {
+  try {
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch (first) {
+    if (!looksHeic(file)) throw first;
+    const heic2any = await loadHeic();
+    const jpg = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
+    return createImageBitmap(Array.isArray(jpg) ? jpg[0] : jpg, { imageOrientation: 'from-image' });
+  }
+}
+
+function drawTo(bitmap, maxEdge, quality) {
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * scale), h = Math.round(bitmap.height * scale);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(bitmap, 0, 0, w, h);
+  // Re-drawing on a canvas produces a brand-new JPEG with no camera data (no GPS location).
+  return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve({ blob: b, width: w, height: h }) : reject(new Error('encode'))), 'image/jpeg', quality));
+}
+
+async function preparePhoto(file) {
+  if (file.size > 40 * 1024 * 1024) throw new Error('This photo is over 40 MB. Please pick a smaller one.');
+  let bmp;
+  try { bmp = await decode(file); } catch {
+    throw new Error(looksHeic(file)
+      ? 'This iPhone photo (HEIC) could not be opened on this device. Fix: on your iPhone go to Settings → Camera → Formats → "Most Compatible", or send the photo to James with "Request a website change".'
+      : 'This file could not be opened as a photo. Please choose a JPG or iPhone photo.');
+  }
+  if (Math.min(bmp.width, bmp.height) < 300) throw new Error('This photo is too small to look good on the website.');
+  const large = await drawTo(bmp, 1800, 0.82);
+  const small = await drawTo(bmp, 900, 0.8);
+  bmp.close?.();
+  return { large, small };
+}
+
+
+/* ---------------- publishing status (shared) ---------------- */
+
+// Shows how a publish is going in `box` until the website reports the change. One watcher per box: starting a
+// new one (a second Publish) takes over the box and the old one stops. compact = one line (the Publish bar).
+function watchPublish(box, job, { compact = false, onState = null } = {}) {
+  if (!box) return;
+  if (!job?.commit) { toast('Nothing to publish.'); return; }
+  box.dataset.commit = job.commit;
+  const mine = () => box.isConnected && box.dataset.commit === job.commit;
+  const paint = (state) => {
+    if (!mine()) return;
+    box.dataset.state = state;
+    if (state === 'live') {
+      box.innerHTML = compact
+        ? `<p class="publine publine--ok" role="status">✓ Done – <a href="${esc(job.url)}" target="_blank" rel="noopener">view your website</a> <button type="button" class="publine__x" data-dismiss aria-label="Close this message">×</button></p>`
+        : `<div class="publish-panel note--ok"><h2>✓ Done – ${esc(job.verb)}</h2><p>The website now shows your change.</p><p><a class="btn btn--primary" href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.linkLabel || (job.takedown ? 'Check the old web address' : 'View updated listing'))}</a></p><button type="button" class="btn btn--small" data-dismiss>Close</button></div>`;
+      if (store.get(KEYS.pub)?.commit === job.commit) store.del(KEYS.pub);
+    } else if (state === 'failed' || state === 'timeout') {
+      const why = state === 'timeout' ? 'It is taking much longer than usual.' : 'The website update ran into a problem.';
+      box.innerHTML = compact
+        ? `<p class="publine publine--bad" role="alert">Publishing didn't finish. Your changes are saved. <button type="button" class="btn btn--small" data-retry>Try again</button></p>`
+        : `<div class="publish-panel note--bad" role="alert"><h2>Publishing didn't finish</h2><p>Your changes are saved — nothing was lost. ${why}</p><p><button type="button" class="btn btn--primary" data-retry>Try again</button></p><p class="hint">If it fails again, contact ${supportLine()}.</p></div>`;
+      if (compact) box.querySelector('.publine').title = `${why} If it fails again, contact ${me?.support?.name || 'your website helper'}.`;
+    } else {
+      box.innerHTML = compact
+        ? '<p class="publine" role="status" title="Your website updates in 1–3 minutes. You can keep working meanwhile."><span class="spinner" aria-hidden="true"></span> Publishing… about 2 minutes</p>'
+        : '<div class="publish-panel" role="status"><h2><span class="spinner" aria-hidden="true"></span> Your changes are being published</h2><p>This usually takes 1–3 minutes. You can leave this page — it will still finish. We\'ll show a link here once the website has updated.</p></div>';
+    }
+    box.querySelector('[data-dismiss]')?.addEventListener('click', () => { box.innerHTML = ''; delete box.dataset.commit; delete box.dataset.state; onState?.(null); });
+    box.querySelector('[data-retry]')?.addEventListener('click', async () => {
+      try { await api('POST', `/publish-retry/${job.commit}`, undefined, { free: true }); job.at = Date.now(); store.set(KEYS.pub, job); paint('publishing'); poll(); } catch (err) { if (mine()) box.innerHTML = errorNote(err); }
+    });
+    onState?.(state);
+  };
+  const poll = async () => {
+    if (!mine() || box.dataset.state !== 'publishing') return;
+    if (Date.now() - job.at > 12 * 60 * 1000) return paint('timeout');
+    try {
+      const s = await api('GET', `/publish-status/${job.commit}`);
+      if (s.state === 'live' || s.state === 'failed') return paint(s.state);
+    } catch { /* keep waiting */ }
+    setTimeout(poll, 6000);
+  };
+  paint('publishing'); poll();
+}
+
+/* ---------------- drag to reorder (finger or mouse) ---------------- */
+// Drag an item by its handle. Works with touch (pointer events), keeps working while the
+// list scrolls (the side panel's scroll box, or the window), and the handle also responds to arrow keys.
+// onDone(newOrderIds, movedId) is called once when the item is dropped somewhere new.
+function makeSortable(list, onDone) {
+  if (!list) return;
+  const items = () => [...list.children].filter((li) => li.dataset.id);
+  // The box that scrolls the list: the nearest scrollable parent (the side panel), else the window.
+  const scroller = () => {
+    for (let el = list.parentElement; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+      const o = getComputedStyle(el).overflowY;
+      if ((o === 'auto' || o === 'scroll') && el.scrollHeight > el.clientHeight) return el;
+    }
+    return null;
+  };
+  list.querySelectorAll('[data-handle]').forEach((handle) => {
+    const li = handle.closest('li');
+    let startOrder = null, scrollTimer = null, lastX = 0, lastY = 0;
+    const check = () => {
+      const target = items().find((x) => { if (x === li) return false; const r = x.getBoundingClientRect(); return lastY >= r.top && lastY <= r.bottom; });
+      if (!target) return;
+      const r = target.getBoundingClientRect();
+      const after = lastY > r.top + r.height / 2;
+      if ((after ? target.nextElementSibling : target) === li) return;
+      list.insertBefore(li, after ? target.nextSibling : target);
+      if (navigator.vibrate) navigator.vibrate(8);
+    };
+    const autoscroll = () => {
+      const box = scroller();
+      const top = box ? box.getBoundingClientRect().top : 0, bottom = box ? box.getBoundingClientRect().bottom : window.innerHeight;
+      const edge = Math.min(100, (bottom - top) / 4), speed = 12;
+      const by = lastY < top + edge ? -speed : lastY > bottom - edge ? speed : 0;
+      if (!by) return;
+      if (box) box.scrollTop += by; else window.scrollBy(0, by);
+      check();
+    };
+    // Move/up are watched on the window: moving the dragged item in the list makes the browser drop the handle's
+    // pointer capture, so the handle alone would never hear the drop.
+    const move = (e) => {
+      if (!startOrder) return;
+      lastX = e.clientX; lastY = e.clientY;
+      check();
+    };
+    const finish = () => {
+      if (!startOrder) return;
+      clearInterval(scrollTimer);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      li.classList.remove('is-dragging');
+      list.classList.remove('is-sorting');
+      const order = items().map((x) => x.dataset.id);
+      const changed = order.join() !== startOrder;
+      startOrder = null;
+      if (changed) onDone(order, li.dataset.id);
+    };
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button > 0 || startOrder) return;
+      e.preventDefault();
+      try { handle.setPointerCapture(e.pointerId); } catch { /* not needed: the window listens too */ }
+      startOrder = items().map((x) => x.dataset.id).join();
+      li.classList.add('is-dragging');
+      list.classList.add('is-sorting');
+      lastX = e.clientX; lastY = e.clientY;
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', finish);
+      window.addEventListener('pointercancel', finish);
+      scrollTimer = setInterval(autoscroll, 16);
+    });
+    handle.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      const order = items().map((x) => x.dataset.id);
+      const i = order.indexOf(li.dataset.id); const j = i + (e.key === 'ArrowUp' ? -1 : 1);
+      if (j < 0 || j >= order.length) return;
+      [order[i], order[j]] = [order[j], order[i]];
+      onDone(order, li.dataset.id);
+    });
+  });
+}
+
+/* Drop photo files onto the upload box (computers). Tapping it still opens the photo picker. */
+function makeDropZone(zone, onFiles) {
+  if (!zone) return;
+  const on = (e) => { e.preventDefault(); zone.classList.add('is-over'); };
+  const off = () => zone.classList.remove('is-over');
+  zone.addEventListener('dragenter', on);
+  zone.addEventListener('dragover', on);
+  zone.addEventListener('dragleave', off);
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault(); off();
+    const files = [...(e.dataTransfer?.files || [])].filter((f) => /^image\//.test(f.type) || /\.(heic|heif|jpe?g|png|webp)$/i.test(f.name));
+    if (files.length) onFiles(files); else toast('Only photos can be added here.');
+  });
+}
+
+function dropZoneHtml(id, label, sub) {
+  return `<label class="dropzone" for="${id}"><span class="dropzone__big">${esc(label)}</span><span class="dropzone__sub">${esc(sub)}</span><input id="${id}" type="file" accept="image/*,.heic,.heif" multiple></label>`;
+}
+
+function handleHtml(n, what = 'photo') {
+  return `<button type="button" class="drag-handle" data-handle aria-label="Drag to move ${what} ${n}. Or use the up and down arrow keys."><span aria-hidden="true">⠿</span><span class="drag-handle__text">Drag</span></button>`;
+}
+
+/* ---------------- router ---------------- */
+
+window.addEventListener('hashchange', route);
+window.addEventListener('beforeunload', (e) => { if (unsavedGuard && unsavedGuard()) { e.preventDefault(); e.returnValue = ''; } });
+
+// Laptop only: phones see a friendly note instead of the editor (the server refuses phones too).
+function isPhoneDevice() {
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPod|Windows Phone|BlackBerry|Opera Mini|IEMobile/i.test(ua) || (/Android/i.test(ua) && /Mobile/i.test(ua))) return true;
+  return window.matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600;
+}
+
+function laptopOnlyScreen() {
+  setScreen(`<h1>Please use your laptop</h1>
+  <div class="note"><p>The website editor is set up for your <strong>laptop</strong>. Open the <strong>Website Editor</strong> bookmark on your laptop to change your website's photos and reviews.</p></div>
+  <p class="hint">Took photos on your phone? Send them to your laptop first (for example by email or Google Photos), then add them in the editor.</p>`);
+}
+
+// "Website Editor" at the top always goes back to the Home page.
+document.querySelector('.bar__home')?.addEventListener('click', (e) => {
+  store.set(KEYS.page, '/');
+  if (location.hash === '#/' || location.hash === '') { e.preventDefault(); route(); }
+});
+
+async function route() {
+  if (isPhoneDevice()) return laptopOnlyScreen();
+  if (unsavedGuard && unsavedGuard() && !(await confirmBox({ title: 'Leave without saving?', body: 'You have typing that is not saved yet.', yes: 'Leave anyway', no: 'Stay here', danger: true }))) {
+    history.replaceState(null, '', route.last || '#/');
+    return;
+  }
+  unsavedGuard = null; escHandler = null; busy.subs.clear(); toast.clear();
+  route.last = location.hash;
+  document.body.classList.remove('is-visual');
+  const h = location.hash.replace(/^#\/?/, '');
+  try {
+    if (!me) {
+      try { me = await api('GET', '/me'); } catch (e) { if (e.data?.laptopOnly) return laptopOnlyScreen(); throw e; }
+      document.getElementById('who').textContent = `Signed in as ${me.email}`;
+      document.getElementById('bar-name').textContent = me.site.name || '';
+      if (me.site.name) document.title = `${me.site.name} – Website Editor`;
+    }
+    if (h === '') return await visualScreen();
+    if (h === 'list') return startScreen();
+    if (h === 'homepage' && me.features.slideshow) return homepageScreen();
+    if (me.features.reviews) {
+      if (h === 'reviews') return reviewsScreen();
+      if (h === 'reviews/new') return reviewEditScreen(null);
+      if (h.startsWith('reviews/edit/')) return reviewEditScreen(decodeURIComponent(h.slice('reviews/edit/'.length)));
+    }
+    return startScreen();
+  } catch (err) {
+    document.body.classList.remove('is-visual');
+    setScreen(`<h1>Website Editor</h1>${errorNote(err)}<p class="hint">If this keeps happening, contact ${supportLine()}.</p>`);
+  }
+}
+
+
+/* ---------------- edit on the page (the main editor screen) ---------------- */
+// Shows the owner's real page (a private draft preview) with a ✎ button on everything they can change.
+// Which buttons appear is decided by the page itself: every editable part carries data-edit="<kind>"
+// (src/lib/editables.mjs). KIND_TOOLS says what each kind opens. Unknown kinds are simply skipped.
+//
+// Everything the owner changes is saved on the server as a private draft in a "draft source". The Publish
+// bar publishes, undoes and reloads every source; panels report each saved change with
+// ctx.update(sourceId, newState). A new kind adds its source here and its panel to KIND_TOOLS (docs/EDITOR.md).
+// A source's server routes follow one contract: GET <api> → { revision, hasUnpublishedChanges, … },
+// POST <api>/publish { baseRevision } → { [result]: newState, commit }, POST <api>/discard { baseRevision } → newState.
+const DRAFT_SOURCES = [
+  { id: 'homepage', what: 'photos', api: '/homepage', result: 'homepage', enabled: () => true },
+  { id: 'reviews', what: 'reviews', api: '/reviews', result: 'reviews', enabled: () => me.features?.reviews !== false },
+  { id: 'text', what: 'wording', api: '/text', result: 'text', enabled: () => true },
+];
+
+function draftSource(def) {
+  return {
+    load: () => api('GET', def.api),
+    publish: async (st) => { const r = await api('POST', `${def.api}/publish`, { baseRevision: st.revision }, { idem: uuid(), free: true }); return { state: r[def.result], commit: r.commit }; },
+    discard: (st) => api('POST', `${def.api}/discard`, { baseRevision: st.revision }, { free: true }),
+    ...def,
+  };
+}
+
+// place: 'bar' = a full-width button above the part (for big areas like a reviews section),
+// 'bottom' = bottom-right corner of the part (cards, so the title and date stay readable).
+const KIND_TOOLS = {
+  slideshow: { title: 'Slideshow photos', button: '✎ Change slideshow', open: (body, ctx) => homepageScreen(body, { embedded: true, H: ctx.get('homepage'), onChange: (st) => ctx.update('homepage', st) }) },
+  photo: { title: (key) => spotInfo()[key]?.label || 'Photo', button: '✎ Change photo', open: (body, ctx) => spotPanel(body, ctx) },
+  reviews: { title: 'Reviews', button: '✎ Change reviews', barButton: '✎ Change reviews – add, change or remove', place: 'bar', open: (body, ctx) => reviewsPanel(body, ctx, null) },
+  review: { title: 'Change this review', button: '✎ Change review', place: 'bottom', open: (body, ctx) => reviewsPanel(body, ctx, ctx.key) },
+  // Words (t()/tBlock()/tList() in src/lib/text.mjs): changed right on the page, no side panel – see "Words" in visualScreen.
+  text: { inline: true, title: 'Words', button: '✎' },
+};
+
+// Reviews in the side panel: the list (slug = null) or one review's form; "← All reviews" goes back to the list.
+function reviewsPanel(body, ctx, slug) {
+  const opts = () => ({ embedded: true, R: ctx.get('reviews'), onChange: (st) => ctx.update('reviews', st) });
+  const showList = () => { if (!body.isConnected) return; ctx.setTitle('Reviews'); reviewsScreen(body, { ...opts(), edit: showForm }); };
+  const showForm = (s) => { if (!body.isConnected) return; ctx.setTitle(s ? 'Change this review' : 'Add a review'); reviewEditScreen(s, body, { ...opts(), back: showList }); };
+  if (slug) showForm(slug); else showList();
+}
+
+const PEN_CSS = `
+[data-edit]{cursor:pointer;outline:4px solid transparent;outline-offset:4px;transition:outline-color .15s}
+[data-edit].jte-wide{outline-offset:-4px}
+[data-edit].jte-hover,[data-edit].jte-on{outline-color:#111}
+.jte-pen{position:absolute;z-index:60;display:inline-flex;align-items:center;gap:.4rem;min-height:50px;margin:0;padding:.5rem 1.05rem;border:3px solid #fff;border-radius:999px;background:#111;color:#fff;font:700 18px/1.1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;letter-spacing:0;text-transform:none;white-space:nowrap;box-shadow:0 0 0 2px #111,0 4px 14px rgba(0,0,0,.4);cursor:pointer}
+.jte-pen:hover{background:#3a3a3a}
+.jte-pen:focus-visible{outline:4px solid #ffbf47;outline-offset:3px}
+.jte-pen--round{width:52px;height:52px;min-height:0;padding:0;justify-content:center;font-size:24px}
+.jte-pen--bar{position:relative;z-index:auto;display:flex;width:max-content;max-width:100%;margin:0 0 14px auto}
+.jte-roomy{padding-bottom:76px!important}
+.preview-bar{display:none!important}
+[data-edit=text]{cursor:text;outline:2px dashed transparent;outline-offset:3px;border-radius:2px;transition:none}
+[data-edit=text].jte-hover,[data-edit=text]:focus-visible{outline:2px dashed #1d5fc4;outline-offset:3px;background-color:rgba(29,95,196,.10)}
+[data-edit=text].jte-editing{outline:3px solid #1d5fc4;outline-offset:4px;background-color:rgba(29,95,196,.06);cursor:text;caret-color:auto}
+[data-edit=text].jte-editing,[data-edit=text].jte-editing *{text-transform:none!important}
+.jte-tpen{position:absolute;z-index:75;display:none;align-items:center;justify-content:center;width:34px;height:34px;margin:0;padding:0;border:2px solid #fff;border-radius:50%;background:#1d5fc4;color:#fff;font:700 18px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.35);cursor:pointer}
+.jte-tpen.is-on{display:flex}
+.jte-tbar{position:absolute;z-index:90;box-sizing:border-box;width:min(580px,calc(100vw - 16px));margin:0;padding:14px 16px 16px;background:#fff;color:#1a1a1a;border:2px solid #1d5fc4;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.3);font:400 17px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:left;letter-spacing:0;text-transform:none;white-space:normal;cursor:default}
+.jte-tbar.is-fixed{position:fixed}
+.jte-tbar *{box-sizing:border-box;font-family:inherit;letter-spacing:0;text-transform:none;text-shadow:none}
+.jte-tbar p{margin:0 0 8px;color:#1a1a1a;font-size:17px;font-weight:400;line-height:1.4;text-align:left}
+.jte-tbar .jte-tbar__what{font-size:18px;font-weight:700}
+.jte-tbar .jte-tbar__must{padding:6px 10px;background:#fff7e6;border-left:4px solid #8a5a00}
+.jte-tbar .jte-tbar__err{margin:0 0 10px;padding:8px 10px;background:#fdeeee;border-left:4px solid #b3261e;font-weight:600}
+.jte-tbar__err p{margin:0 0 6px}
+.jte-tbar__btns{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+.jte-b{display:inline-flex;align-items:center;min-height:52px;margin:0;padding:10px 18px;border:2px solid #1a1a1a;border-radius:10px;background:#fff;color:#1a1a1a;font:700 18px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;cursor:pointer;text-decoration:none}
+.jte-b:hover:not(:disabled){background:#f0f0f2}
+.jte-b--save{background:#1d5fc4;border-color:#1d5fc4;color:#fff}
+.jte-b--save:hover:not(:disabled){background:#174ea0}
+.jte-b--small{min-height:44px;padding:6px 14px;font-size:16px}
+.jte-b:disabled{background:#e6e6e9;border-color:#e6e6e9;color:#5a5a64;cursor:not-allowed}
+.jte-b:focus-visible,.jte-tpen:focus-visible{outline:3px solid #ffbf47;outline-offset:2px}
+.jte-tbar__input{display:block;width:100%;min-height:52px;margin:0 0 6px;padding:8px 12px;border:2px solid #8a8a94;border-radius:10px;background:#fff;color:#1a1a1a;font-size:19px}
+.jte-tbar__input:focus{border-color:#1d5fc4;outline:none}`;
+
+async function visualScreen() {
+  document.body.classList.add('is-visual');
+  setScreen('<p class="loading">Loading your website…</p>');
+  const sources = DRAFT_SOURCES.filter((s) => s.enabled()).map(draftSource);
+  const S = {}; // the newest state of every draft source, by id
+  await Promise.all(sources.map(async (s) => { S[s.id] = await s.load(); }));
+  const isDirty = (s) => !!S[s.id]?.hasUnpublishedChanges;
+  const dirty = () => sources.some(isDirty);
+  const pages = me.pages?.length ? me.pages : [{ path: '/', title: 'Home' }];
+  // Main pages are buttons; pages only reached from the footer or by visitors ("page not found") are under "More pages".
+  const mainPages = pages.filter((p) => !p.more), morePages = pages.filter((p) => p.more);
+  let path = pages.some((p) => p.path === store.get(KEYS.page)) ? store.get(KEYS.page) : '/';
+  let device = store.get(KEYS.device) === 'phone' ? 'phone' : 'laptop';
+  let open = null; // { kind, key, label, host } – the panel that is open
+  let publishing = false;
+  const nothingAtAll = !Object.keys(spotInfo()).length && me.features?.slideshow === false && me.features?.reviews === false;
+
+  app.innerHTML = `
+  <div class="vis">
+    <div class="vis__top">
+      <div class="vis__pages" id="vpages" role="group" aria-labelledby="pages-label">
+        <label class="vis__label" id="pages-label" for="pagesel">Page:</label>
+        <span class="vis__pagebtns">${mainPages.map((p) => `<button type="button" class="seg" data-page="${esc(p.path)}" title="${esc(p.title)}">${esc(p.title)}</button>`).join('')}</span>
+        ${morePages.length ? `<select class="vis__moresel" id="pagemore" aria-label="More pages"><option value="">More pages…</option>${morePages.map((p) => `<option value="${esc(p.path)}">${esc(p.title)}</option>`).join('')}</select>` : ''}
+        <select class="vis__select" id="pagesel">${pages.map((p) => `<option value="${esc(p.path)}">${esc(p.title)}</option>`).join('')}</select>
+      </div>
+      <p class="vis__help">Click any <strong>words</strong> or a <strong>✎ Change</strong> button, then <strong>Publish</strong>.</p>
+      <p class="vis__more"><a href="#/list">List view</a> · Help: ${supportShort()}</p>
+    </div>
+    <div id="vmsg" class="vis__msg"></div>
+    <div class="vis__body" id="vbody">
+      <div class="vis__stage" id="stage">
+        <iframe id="frame" title="Your website, with your unpublished changes"></iframe>
+        <div class="vis__over" id="over" hidden></div>
+      </div>
+      <aside class="drawer" id="drawer" hidden role="region" aria-labelledby="drawer-title">
+        <div class="drawer__head"><h2 id="drawer-title" tabindex="-1"></h2><button type="button" class="btn btn--small btn--dark" data-close>Done</button></div>
+        <div class="drawer__body" id="drawer-body"></div>
+      </aside>
+    </div>
+    <div class="textbar" id="textbar" hidden></div>
+    <div class="vis__bar">
+      <div class="vis__device" role="group" aria-label="See it on">
+        <span class="vis__label">See it on:</span>
+        <button type="button" class="seg" data-device="laptop">Computer</button>
+        <button type="button" class="seg" data-device="phone">Phone</button>
+        <button type="button" class="btn btn--visitor" data-visitor aria-pressed="false">See it as a visitor</button>
+      </div>
+      <div class="vis__status">
+        <p class="actions__state" id="state"></p>
+        <p class="flash" id="flash" role="status" hidden></p>
+        <div id="vpub" class="vis__pub" aria-live="polite"></div>
+      </div>
+      <div class="vis__btns">
+        <button type="button" class="btn" data-undo-all>Undo all changes</button>
+        <button type="button" class="btn btn--primary btn--publish" data-publish>Publish</button>
+      </div>
+    </div>
+  </div>`;
+
+  const vis = app.querySelector('.vis');
+  const alive = () => vis.isConnected;
+  const $ = (sel) => vis.querySelector(sel);
+  const frame = $('#frame'), stage = $('#stage'), vbody = $('#vbody'), over = $('#over');
+  const drawer = $('#drawer'), dBody = $('#drawer-body'), dTitle = $('#drawer-title');
+  const msg = $('#vmsg'), pubBox = $('#vpub'), pickerEl = $('#vpages'), pagesel = $('#pagesel'), pagemore = $('#pagemore');
+  const publishBtn = $('[data-publish]'), undoBtn = $('[data-undo-all]');
+  let keepScroll = 0, lastScroll = 0;
+  let pens = new Map(); // "kind|key" → the ✎ button in the page
+
+  const paintBar = () => {
+    if (!alive()) return;
+    const d = dirty(), working = busy.n > 0, pubShown = !!pubBox.dataset.state; // the publish line says it all
+    $('#state').textContent = working ? 'Saving your change…' : publishing ? 'Publishing…' : d ? 'You have changes that are not on the website yet' : pubShown ? '' : 'The website is up to date';
+    publishBtn.disabled = !d || working || publishing;
+    undoBtn.hidden = !d;
+    undoBtn.disabled = working || publishing;
+    vis.querySelectorAll('[data-page]').forEach((b) => { const on = b.dataset.page === path; b.classList.toggle('is-on', on); b.setAttribute('aria-pressed', String(on)); });
+    pagesel.value = path;
+    if (pagemore) pagemore.value = morePages.some((p) => p.path === path) ? path : '';
+    vis.querySelectorAll('[data-device]').forEach((b) => { const on = b.dataset.device === device; b.classList.toggle('is-on', on); b.setAttribute('aria-pressed', String(on)); });
+    stage.classList.toggle('vis__stage--phone', device === 'phone');
+    const vb = vis.querySelector('[data-visitor]');
+    if (vb) { vb.textContent = visitor ? '← Back to editing' : 'See it as a visitor'; vb.classList.toggle('btn--primary', visitor); vb.setAttribute('aria-pressed', String(visitor)); }
+    vis.classList.toggle('is-visitor', visitor);
+    fit();
+  };
+  busy.subs.add(paintBar);
+
+  // The page picker is a row of buttons when they fit, otherwise one big drop-down list.
+  const fitPicker = () => {
+    if (!alive()) return;
+    pickerEl.classList.remove('is-select');
+    const row = pickerEl.querySelector('.vis__pagebtns');
+    if (mainPages.length > 6 || row.scrollWidth > row.clientWidth + 1) pickerEl.classList.add('is-select');
+  };
+  // While the panel is open the website keeps its full computer width and is shown smaller (never its tablet layout).
+  function fit() {
+    if (!alive()) return;
+    const st = frame.style;
+    if (device === 'phone' || !open) { st.width = ''; st.height = ''; st.transform = ''; return; }
+    const full = vbody.clientWidth - (stage.offsetWidth - stage.clientWidth);
+    const scale = Math.min(1, stage.clientWidth / full);
+    st.width = `${full}px`; st.height = `${stage.clientHeight / scale}px`; st.transform = scale < 1 ? `scale(${scale})` : '';
+  }
+  const ro = new ResizeObserver(() => { fit(); fitPicker(); });
+  ro.observe(vbody); ro.observe(stage);
+
+  let visitor = false; // "See it as a visitor": the page with your unpublished changes, without any ✎ or outlines
+  const previewUrl = () => `/api/homepage/preview?${visitor ? '' : 'edit=1&'}path=${encodeURIComponent(path)}&r=${sources.map((s) => S[s.id]?.revision || 0).join('.')}&t=${Date.now()}`;
+  const load = (keep = false) => { keepScroll = keep ? lastScroll : 0; over.hidden = true; frame.classList.remove('is-broken'); frame.src = previewUrl(); };
+
+  // A panel saved something: newer state replaces older (a late answer from a slow upload never wins over a newer one).
+  const update = (id, st) => {
+    if (!alive() || !st) return;
+    if (S[id] && Number(st.revision) < Number(S[id].revision)) return;
+    S[id] = st; paintBar();
+    if (te && textChanged()) { pendingReload = true; return; } // never wipe words being typed: redraw after Save/Cancel
+    load(true);
+  };
+  const setTitle = (t) => { dTitle.textContent = t; };
+  const toolTitle = (tool, key, label) => (typeof tool.title === 'function' ? tool.title(key) : (tool.title || label));
+
+  async function openTool(kind, key, label) {
+    const tool = KIND_TOOLS[kind];
+    if (!tool || !alive()) return;
+    if (tool.go) { location.hash = tool.go; return; }
+    if (open && open.kind === kind && open.key === key) { dTitle.focus({ preventScroll: true }); return; }
+    if (!(await closeTool({ refocus: false }))) return;
+    const host = document.createElement('div'); // a fresh container: a late answer for an old panel can't land here
+    dBody.replaceChildren(host);
+    open = { kind, key, label, host };
+    setTitle(toolTitle(tool, key, label));
+    drawer.hidden = false; vbody.classList.add('has-drawer');
+    fit(); markOpen();
+    dTitle.focus({ preventScroll: true });
+    const ctx = {
+      kind, key, label, alive: () => host.isConnected, setTitle: (t) => { if (host.isConnected) setTitle(t); },
+      get: (id) => S[id], update,
+      // older names, kept for panels written before draft sources existed
+      get H() { return S.homepage; }, onChange: (st) => update('homepage', st), getR: () => S.reviews, onReviews: (st) => update('reviews', st),
+    };
+    try { await tool.open(host, ctx); } catch (err) { if (host.isConnected) host.innerHTML = errorNote(err); }
+  }
+
+  // Closes the panel. Asks first when there is unsaved typing; returns false if the owner wants to keep typing.
+  async function closeTool({ ask = true, refocus = true } = {}) {
+    if (te && !(await finishText({ ask }))) return false; // words being typed on the page: save or throw away first
+    if (!open) return true;
+    if (ask && unsavedGuard?.() && !(await confirmBox({ title: 'Leave without saving?', body: 'You have typing that is not saved yet. It will be lost.', yes: 'Leave without saving', no: 'Keep typing', danger: true }))) return false;
+    unsavedGuard = null;
+    const was = open; open = null;
+    if (!alive()) return true;
+    drawer.hidden = true; dBody.replaceChildren(); vbody.classList.remove('has-drawer');
+    fit(); markOpen();
+    if (refocus) { const pen = pens.get(`${was.kind}|${was.key || ''}`); if (pen?.isConnected) pen.focus({ preventScroll: true }); else frame.focus(); }
+    return true;
+  }
+  function markOpen() {
+    const doc = frame.contentDocument; if (!doc) return;
+    doc.querySelectorAll('[data-edit]').forEach((el) => el.classList.toggle('jte-on', !!open && el.dataset.edit === open.kind && (el.dataset.editKey || '') === (open.key || '')));
+  }
+  escHandler = () => { if (te) escapeText(); else if (open) closeTool(); };
+
+  // Visitor view: nothing to edit; links between your pages work, the rest is paused.
+  function visitorPage(doc) {
+    const st = doc.createElement('style'); st.textContent = '.preview-bar{display:none!important}'; doc.head.appendChild(st);
+    doc.addEventListener('click', (e) => {
+      const a = e.target.closest('a[href]'); if (!a) return;
+      const raw = a.getAttribute('href') || '';
+      if (raw.startsWith('#')) { if (raw === '#') e.preventDefault(); return; }
+      e.preventDefault();
+      if (/^(tel|mailto|sms):/i.test(raw)) { toast('On the real website this opens the phone or email app.'); return; }
+      const to = sitePathOf(raw);
+      const pg = to && pages.find((x) => x.path === to || x.path === to + '/');
+      if (pg) goPage(pg.path); else toast('That link goes to another website – it works on your real website.');
+    }, true);
+    doc.addEventListener('submit', (e) => { e.preventDefault(); e.stopPropagation(); toast('The form works on your real website – it is switched off here.'); }, true);
+    doc.addEventListener('keydown', (e) => { if (e.key === 'Escape') setVisitor(false); });
+    doc.defaultView.addEventListener('scroll', () => { lastScroll = doc.defaultView.scrollY; }, { passive: true });
+    if (keepScroll) doc.defaultView.scrollTo(0, keepScroll);
+    lastScroll = keepScroll;
+  }
+  function visitorNote() {
+    msg.innerHTML = '<div class="note note--visitor"><p><span><strong>This is how visitors will see your website</strong> after you click <strong>Publish</strong> – with your unpublished changes. Click the menu to look at other pages. Nothing can be changed here.</span> <button type="button" class="btn btn--small" data-visitor-off>← Back to editing</button></p></div>';
+    msg.querySelector('[data-visitor-off]').addEventListener('click', () => setVisitor(false));
+  }
+  async function setVisitor(on) {
+    if (on === visitor) return;
+    if (on && !(await closeTool({ refocus: false }))) return; // asks first if words are being typed
+    visitor = on; toast.clear();
+    msg.innerHTML = ''; if (on) visitorNote();
+    paintBar(); load(true);
+    vis.querySelector('[data-visitor]')?.focus();
+  }
+
+  async function goPage(p) {
+    if (p === path && !open) return;
+    if (!(await closeTool({ refocus: false }))) { paintBar(); return; }
+    path = p; store.set(KEYS.page, path); toast.clear(); msg.innerHTML = ''; if (visitor) visitorNote();
+    lastScroll = 0; paintBar(); load();
+  }
+
+  // The innermost editable thing the editor knows (a review inside a reviews section, not an unknown kind).
+  const editableAt = (t) => { let el = t.closest('[data-edit]'); while (el && !KIND_TOOLS[el.dataset.edit]) el = el.parentElement?.closest('[data-edit]'); return el; };
+
+  // Which page of the site a link points to ("/about/"), or null if it leaves the site. Handles a site under a
+  // sub-path (GitHub Pages testing link), relative links ("../contact/") and root links written without it ("/team/").
+  function sitePathOf(raw) {
+    const siteBase = new URL((me.site.url || location.origin) + '/');
+    let u;
+    try { u = new URL(raw, new URL(path.replace(/^\//, ''), siteBase)); } catch { return null; }
+    if (u.origin !== siteBase.origin) return null;
+    let p = u.pathname;
+    if (siteBase.pathname !== '/' && p.startsWith(siteBase.pathname)) p = '/' + p.slice(siteBase.pathname.length);
+    return p;
+  }
+
+  function addPen(doc, el, tool) {
+    const kind = el.dataset.edit, key = el.dataset.editKey || '', label = el.dataset.editLabel || '';
+    const pen = doc.createElement('button');
+    pen.type = 'button'; pen.className = 'jte-pen';
+    const words = tool.button.replace(/^✎\s*/, '');
+    pen.setAttribute('aria-label', label ? `${words}: ${label}` : words);
+    pen.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openTool(kind, key, label); });
+    pens.set(`${kind}|${key}`, pen);
+    if (tool.place === 'bar') {
+      pen.classList.add('jte-pen--bar'); pen.textContent = tool.barButton || tool.button;
+      const into = el.querySelector(':scope > .wrap, :scope > .container') || el;
+      into.insertBefore(pen, into.firstChild);
+      return;
+    }
+    const host = el.tagName === 'IMG' ? el.parentElement : el;
+    const win = doc.defaultView;
+    if (win.getComputedStyle(host).position === 'static') host.style.position = 'relative';
+    if (tool.place === 'bottom') host.classList.add('jte-roomy');
+    host.appendChild(pen);
+    const place = () => {
+      const s = pen.style; s.top = s.left = s.right = s.bottom = s.transform = '';
+      const w = el.offsetWidth, h = el.offsetHeight;
+      const ox = el === host ? 0 : el.offsetLeft, oy = el === host ? 0 : el.offsetTop;
+      const round = w < 200 || h < 120; // small things (a logo, a thumbnail) get a round ✎ just outside their corner
+      pen.classList.toggle('jte-pen--round', round);
+      pen.textContent = round ? '✎' : tool.button;
+      if (round) { s.left = `${ox + w - 30}px`; s.top = `${oy - 20}px`; return; }
+      if (tool.place === 'bottom') { s.right = '12px'; s.bottom = '12px'; return; }
+      if (el.tagName === 'IMG' && w < 320) { s.left = `${ox + w / 2}px`; s.top = `${oy + h - pen.offsetHeight - 12}px`; s.transform = 'translateX(-50%)'; return; } // keeps a face visible
+      if (el === host) { s.top = '14px'; s.right = '14px'; return; }
+      s.top = `${oy + 12}px`; s.left = `${Math.max(8, ox + w - pen.offsetWidth - 12)}px`;
+    };
+    place();
+    el.addEventListener('load', place);
+    win.addEventListener('resize', place);
+    if (win.ResizeObserver) new win.ResizeObserver(place).observe(el);
+  }
+
+  /* ---- Words: click any words on the page and type right there ("in place") ---- */
+  // Every visible word on the page is marked data-edit="text" (t()/tBlock()/tList() in src/lib/text.mjs). Clicking the
+  // words (or their small ✎) makes just that element typeable (contenteditable="plaintext-only") with a toolbar next to
+  // it: "Save – show it on my page" / "Cancel". One line: Enter saves. Paragraphs / lists: Enter starts a new one.
+  // Words inside a button or a form label are typed into a box in the toolbar (browsers don't allow typing inside those).
+  // Links keep their address: only the words inside change. Saved words go to the "text" draft source like every change.
+  let te = null; // the words being changed: { el, key, multi, kind, must, label, before, html, link, input, bar, saving }
+  let tpen = null, tpenFor = null; // the one small ✎ that follows the mouse / keyboard focus
+  let pendingReload = false, refocusKey = null;
+  const pageTitle = () => (pages.find((p) => p.path === path) || {}).title || 'This page';
+
+  function textLabel(el) {
+    if (el.dataset.editLabel) return el.dataset.editLabel;
+    const main = el.ownerDocument.querySelector('main');
+    const where = el.closest('nav') ? 'Menu' : el.closest('footer') ? 'Bottom of every page' : el.closest('header') ? 'Top of every page'
+      : main && !main.contains(el) ? (main.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING ? 'Top of every page' : 'Bottom of every page') : pageTitle();
+    const what = el.dataset.textMulti === 'li' ? 'list' : el.dataset.textMulti ? 'paragraphs' : el.closest('h1') ? 'big title' : el.closest('h2, h3, h4, h5, h6') ? 'heading'
+      : el.closest('button, .btn') ? 'button' : el.closest('nav a') ? 'menu item' : el.closest('a') ? 'link' : el.closest('label') ? 'form label' : 'words';
+    const words = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    return `${where} – ${what} “${words.length > 42 ? words.slice(0, 40) + '…' : words}”`;
+  }
+
+  /** What the owner typed: one line, or a list of paragraphs / list items. */
+  function wordsOf(x) {
+    if (x.input) return x.input.value.replace(/\s+/g, ' ').trim();
+    const raw = x.el.innerText || '';
+    if (!x.multi) return raw.replace(/\s+/g, ' ').trim();
+    return raw.split(x.multi === 'li' ? /\n+/ : /\n[ \t]*\n/).map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  }
+  const textChanged = () => !!te && !te.saving && JSON.stringify(wordsOf(te)) !== te.before;
+
+  /** The same checks as the server (src/lib/text.mjs → cleanText), so the owner hears at once. */
+  function checkWords(x, v) {
+    const empty = Array.isArray(v) ? !v.length : !v;
+    if (empty) return x.must ? 'This must stay on your website. You can change the words, but not remove them.' : 'This can\'t be empty. Type the words you want here, or click Cancel.';
+    if (!Array.isArray(v) && v.length > 300) return `Please keep this short – at most 300 letters (it has ${v.length}).`;
+    if (x.kind === 'phone') { const d = v.replace(/\D/g, ''); if (!/^[+()\d\s.-]+$/.test(v) || d.length < 7 || d.length > 15) return 'Please type a phone number using numbers only, for example 704-555-0100. The Call and Text buttons use it.'; }
+    if (x.kind === 'email' && !/^[^\s@<>()"',;]+@[^\s@<>()"',;]+\.[a-z]{2,}$/i.test(v)) return 'Please type an email address, for example name@example.com. The Email buttons use it.';
+    return '';
+  }
+
+  function showTpen(el) {
+    if (!tpen?.isConnected || te) return;
+    const doc = el.ownerDocument, win = doc.defaultView;
+    const r = el.getClientRects()[0] || el.getBoundingClientRect();
+    if (!r.width && !r.height) return hideTpen();
+    tpenFor = el;
+    const fixed = isFixed(el);
+    tpen.style.position = fixed ? 'fixed' : 'absolute';
+    const sx = fixed ? 0 : win.scrollX, sy = fixed ? 0 : win.scrollY;
+    const all = el.getBoundingClientRect();
+    tpen.style.left = `${Math.max(4, Math.min(win.innerWidth - 40, all.right + 4)) + sx}px`;
+    tpen.style.top = `${Math.max(4, r.top - 20) + sy}px`;
+    tpen.setAttribute('aria-label', `Change text: ${textLabel(el)}`);
+    tpen.classList.add('is-on');
+  }
+  function hideTpen() { tpen?.classList.remove('is-on'); tpenFor = null; }
+  const isFixed = (el) => { for (let x = el; x && x.nodeType === 1; x = x.parentElement) { const p = x.ownerDocument.defaultView.getComputedStyle(x).position; if (p === 'fixed' || p === 'sticky') return true; } return false; };
+
+  async function startText(el, point = null) {
+    if (!el?.isConnected || !alive()) return;
+    if (te && te.el === el) return;
+    if (!(await closeTool({ refocus: false }))) return; // also asks about other words being typed
+    const doc = el.ownerDocument;
+    hideTpen();
+    const x = { el, key: el.dataset.editKey, multi: el.dataset.textMulti || '', kind: el.dataset.textKind || '', must: el.dataset.textMust === '1', label: textLabel(el), html: el.innerHTML, link: el.closest('a[href]'), saving: false };
+    const inBox = el.closest('button, label, select, summary, option');
+    el.classList.add('jte-editing');
+    te = x;
+    if (inBox) x.input = true;
+    else {
+      el.contentEditable = 'plaintext-only';
+      if (el.contentEditable !== 'plaintext-only') el.contentEditable = 'true';
+      el.spellcheck = true;
+      if (x.link) { x.drag = x.link.getAttribute('draggable'); x.link.setAttribute('draggable', 'false'); }
+    }
+    buildBar(x);
+    x.before = JSON.stringify(wordsOf(x));
+    unsavedGuard = () => textChanged();
+    placeBar(); focusText(point);
+  }
+
+  function focusText(point = null) {
+    if (!te) return;
+    if (te.input) { te.input.focus(); return; }
+    const el = te.el, doc = el.ownerDocument, sel = doc.getSelection();
+    el.focus({ preventScroll: true });
+    let r = point && doc.caretRangeFromPoint ? doc.caretRangeFromPoint(point.x, point.y) : null;
+    if (!r || !el.contains(r.startContainer)) { r = doc.createRange(); r.selectNodeContents(el); r.collapse(false); }
+    sel.removeAllRanges(); sel.addRange(r);
+  }
+
+  function buildBar(x) {
+    const doc = x.el.ownerDocument;
+    const go = x.link && (() => { const to = sitePathOf(x.link.getAttribute('href') || ''); return to && pages.find((p) => (p.path === to || p.path === to + '/') && p.path !== path); })();
+    const bar = document.createElement('div');
+    bar.className = 'jte-tbar'; bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', 'Change these words');
+    bar.innerHTML = `<div class="jte-tbar__info">
+      ${x.input ? `<input class="jte-tbar__input" type="text" aria-label="New words" value="${esc(x.el.textContent.replace(/\s+/g, ' ').trim())}">` : ''}
+      <p>${x.input ? 'Type the new words in the box.' : x.multi === 'li' ? 'Type right on the page. <strong>Enter</strong> starts a new line in the list.' : x.multi ? 'Type right on the page. <strong>Enter</strong> starts a new paragraph.' : 'Type right on the page. <strong>Enter</strong> saves.'}</p>
+      ${x.must ? '<p class="jte-tbar__must">This must stay on your website. You can change the words, but not remove them.</p>' : ''}
+      ${x.kind === 'phone' ? '<p>This is your phone number – the Call and Text buttons use it.</p>' : x.kind === 'email' ? '<p>This is your email address – the Email buttons use it.</p>' : ''}
+      ${x.link ? `<p>Only the words change – the link still goes to the same place.${go ? ` <button type="button" class="btn btn--small" data-go="${esc(go.path)}">Open “${esc(go.title)}”</button>` : ''}</p>` : ''}
+      <p class="jte-tbar__note">Saving shows it here only. It goes on your real website when you click <strong>Publish</strong>.</p>
+      <div class="jte-tbar__err" role="alert" hidden></div></div>
+      <div class="jte-tbar__btns"><button type="button" class="btn btn--primary" data-save>Save – show it on my page</button><button type="button" class="btn" data-cancel>Cancel</button></div>`;
+    const slot = document.getElementById('textbar'); slot.replaceChildren(bar); slot.hidden = false;
+    x.bar = bar;
+    if (x.input) {
+      x.input = bar.querySelector('.jte-tbar__input');
+      x.input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveText(); } });
+      x.input.addEventListener('input', () => { x.el.textContent = x.input.value; barError(''); placeBar(); });
+    } else {
+      x.el.addEventListener('keydown', x.onKey = (e) => onTextKey(e));
+      x.el.addEventListener('input', x.onInput = () => { barError(''); placeBar(); });
+      x.el.addEventListener('paste', x.onPaste = (e) => onTextPaste(e));
+      x.el.addEventListener('drop', x.onDrop = (e) => e.preventDefault());
+    }
+    bar.querySelector('[data-save]').addEventListener('click', () => saveText());
+    bar.querySelector('[data-cancel]').addEventListener('click', () => cancelText());
+    bar.querySelector('[data-go]')?.addEventListener('click', async (e) => { const to = e.currentTarget.dataset.go; if (await finishText()) goPage(to); });
+  }
+
+  function placeBar() {
+    // The Save/Cancel strip sits below the page (outside it), so it never covers the words.
+    // Only make sure the words being changed stay in view.
+    const x = te; if (!x) return;
+    const win = x.el.ownerDocument.defaultView, r = x.el.getBoundingClientRect(), vh = win.innerHeight;
+    if (r.height < vh - 24) { if (r.bottom > vh - 12) win.scrollBy(0, r.bottom - vh + 24); else if (r.top < 8) win.scrollBy(0, r.top - 24); }
+  }
+
+
+  function barError(html, isHtml = false) {
+    const box = te?.bar?.querySelector('.jte-tbar__err'); if (!box) return;
+    box.hidden = !html;
+    if (isHtml) box.innerHTML = html; else box.textContent = html;
+    placeBar();
+  }
+
+  function onTextKey(e) {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      if (te.multi && !(e.ctrlKey || e.metaKey)) newParagraph(); else saveText();
+    }
+  }
+
+  // Enter in paragraphs / a list: split the paragraph (or list item) at the cursor.
+  function newParagraph() {
+    const el = te.el, doc = el.ownerDocument, sel = doc.getSelection();
+    if (!sel.rangeCount) return;
+    const r = sel.getRangeAt(0); r.deleteContents();
+    const tag = te.multi === 'li' ? 'LI' : 'P';
+    let para = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement;
+    while (para && para !== el && !(para.tagName === tag && para.parentElement === el)) para = para.parentElement;
+    if (!para || para === el) { doc.execCommand('insertText', false, '\n\n'); return; }
+    const tail = doc.createRange(); tail.setStart(r.startContainer, r.startOffset); tail.setEnd(para, para.childNodes.length);
+    const next = para.cloneNode(false); next.appendChild(tail.extractContents());
+    for (const p of [para, next]) if (!p.textContent) p.innerHTML = '<br>';
+    para.after(next);
+    const c = doc.createRange(); c.setStart(next, 0); c.collapse(true); sel.removeAllRanges(); sel.addRange(c);
+    placeBar();
+  }
+
+  // Pasting: plain words only; blank lines in pasted text become paragraphs (lines become list items).
+  function onTextPaste(e) {
+    e.preventDefault();
+    const doc = te.el.ownerDocument;
+    const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
+    if (!te.multi) { doc.execCommand('insertText', false, text.replace(/\s+/g, ' ')); return; }
+    const parts = text.split(te.multi === 'li' ? /\n+/ : /\n[ \t]*\n/).map((p) => p.replace(/\s+/g, ' '));
+    parts.forEach((p, i) => { if (i) newParagraph(); if (p) doc.execCommand('insertText', false, p); });
+  }
+
+  /** Ends typing. restore = put the old words back on the page. */
+  function stopText(restore = false) {
+    const x = te; if (!x) return;
+    te = null;
+    if (unsavedGuard) unsavedGuard = null;
+    x.bar?.remove();
+    const slot = document.getElementById('textbar'); if (slot && !slot.children.length) slot.hidden = true;
+    if (x.onKey) { x.el.removeEventListener('keydown', x.onKey); x.el.removeEventListener('input', x.onInput); x.el.removeEventListener('paste', x.onPaste); x.el.removeEventListener('drop', x.onDrop); }
+    x.el.removeAttribute('contenteditable');
+    x.el.classList.remove('jte-editing');
+    if (x.link) { if (x.drag == null) x.link.removeAttribute('draggable'); else x.link.setAttribute('draggable', x.drag); }
+    if (restore) x.el.innerHTML = x.html;
+    if (msg.querySelector('[data-typing-note]')) msg.innerHTML = '';
+    if (pendingReload && alive()) { pendingReload = false; load(true); }
+  }
+
+  async function saveText() {
+    const x = te; if (!x || x.saving) return false;
+    const value = wordsOf(x);
+    const problem = checkWords(x, value);
+    if (problem) { barError(problem); focusText(); return false; }
+    if (JSON.stringify(value) === x.before) { stopText(true); return true; }
+    x.saving = true;
+    x.bar.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    x.bar.querySelector('[data-save]').textContent = 'Saving…';
+    try {
+      const st = await api('POST', '/text/item', { key: x.key, value, baseRevision: S.text.revision, ...(x.multi === 'li' ? { list: true } : {}) });
+      if (te !== x) return true;
+      refocusKey = x.key;
+      stopText(false);
+      update('text', st);
+      toast('✓ Saved. Click Publish when you\'re happy.');
+      return true;
+    } catch (err) {
+      if (te !== x) return false;
+      x.saving = false;
+      x.bar.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      x.bar.querySelector('[data-save]').textContent = 'Save – show it on my page';
+      barError(errorNote(err), true);
+      return false;
+    }
+  }
+
+  async function cancelText() {
+    if (!te || te.saving) return;
+    const key = te.key;
+    stopText(true);
+    refocusTo(key);
+  }
+  function refocusTo(key) {
+    const el = frame.contentDocument?.querySelector(`[data-edit="text"][data-edit-key="${CSS.escape(key)}"]`);
+    if (el) { el.focus({ preventScroll: true }); showTpen(el); }
+  }
+
+  // Escape: nothing typed → stop; typed → ask before throwing it away.
+  async function escapeText() {
+    if (!te || te.saving) return;
+    if (!textChanged()) return cancelText();
+    const yes = await confirmBox({ title: 'Throw away your typing?', body: 'The words you typed are not saved yet.', yes: 'Throw away my typing', no: 'Keep typing', danger: true });
+    if (!te) return;
+    if (yes) cancelText(); else focusText();
+  }
+
+  /** Before doing something else: ask to save or throw away what is typed. Returns false to keep typing. */
+  async function finishText({ ask = true } = {}) {
+    if (!te) return true;
+    if (te.saving) return false;
+    if (!textChanged()) { stopText(true); return true; }
+    if (!ask) { stopText(true); return true; }
+    const c = await choiceBox({ title: 'Save your new words?', body: 'You typed new words on the page but did not save them yet.', choices: [{ value: 'save', label: 'Save – show it on my page', kind: 'primary' }, { value: 'discard', label: 'Don\'t save', kind: 'danger' }, { value: 'keep', label: 'Keep typing' }] });
+    if (!te) return true;
+    if (c === 'save') return saveText();
+    if (c === 'discard') { stopText(true); return true; }
+    focusText(); return false;
+  }
+
+  function setupWords(doc) {
+    tpen = doc.createElement('button');
+    tpen.type = 'button'; tpen.className = 'jte-tpen'; tpen.tabIndex = -1; tpen.textContent = '✎';
+    tpen.setAttribute('aria-hidden', 'true');
+    doc.body.appendChild(tpen);
+    tpen.addEventListener('mouseleave', (e) => { if (!tpenFor?.contains(e.relatedTarget)) hideTpen(); });
+    // In a flex/grid box (e.g. a "Call 555-0100" button) the space between two marked words would vanish: keep it.
+    const keepSpace = (n) => {
+      if (n?.nodeType !== 3 || !/^\s+$/.test(n.data) || !/flex|grid/.test(doc.defaultView.getComputedStyle(n.parentElement).display)) return;
+      const sp = doc.createElement('span'); sp.className = 'jte-space'; sp.style.whiteSpace = 'pre'; sp.textContent = ' '; n.replaceWith(sp);
+    };
+    for (const el of doc.querySelectorAll('[data-edit="text"]')) {
+      keepSpace(el.previousSibling); keepSpace(el.nextSibling);
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-label', `Change text: ${textLabel(el)}`);
+      el.addEventListener('focus', () => { if (!te) { el.classList.add('jte-hover'); showTpen(el); } });
+      el.addEventListener('blur', () => { el.classList.remove('jte-hover'); });
+    }
+    doc.addEventListener('keydown', (e) => {
+      const w = e.target.closest?.('[data-edit="text"]');
+      if (!w || te?.el === w || !(e.key === 'Enter' || e.key === ' ' || e.key === 'F2')) return;
+      e.preventDefault(); startText(w);
+    });
+  }
+
+  // Put a ✎ button on every editable thing in the page, and keep clicks inside the editor.
+  frame.addEventListener('load', () => {
+    if (!alive() || !frame.getAttribute('src')) return;
+    if (te) { te = null; unsavedGuard = null; } // the page was redrawn (nothing typed was waiting – see update())
+    tpen = null; tpenFor = null;
+    let doc = null;
+    try { doc = frame.contentDocument; } catch { /* another site's page */ }
+    if (doc && doc.location.href === 'about:blank') return;
+    if (!doc || !doc.querySelector('meta[name="editor-preview"]')) return previewFailed();
+    if (visitor) { visitorPage(doc); return; }
+    const st = doc.createElement('style'); st.textContent = PEN_CSS; doc.head.appendChild(st);
+    // Sticky and fixed bars (a site header) stay above the ✎ buttons of the page under them.
+    for (const x of doc.body.querySelectorAll('*')) {
+      const cs = doc.defaultView.getComputedStyle(x);
+      if ((cs.position === 'sticky' || cs.position === 'fixed') && !(parseInt(cs.zIndex, 10) >= 70)) x.style.zIndex = '70';
+    }
+    pens = new Map();
+    const pageW = doc.documentElement.clientWidth;
+    doc.querySelectorAll('[data-edit]').forEach((el) => {
+      const tool = KIND_TOOLS[el.dataset.edit];
+      if (!tool || tool.inline) return;
+      // Full-width parts get their outline just inside their edge; everything else just outside, so it never covers words.
+      if (el.getBoundingClientRect().width >= pageW - 4) el.classList.add('jte-wide');
+      addPen(doc, el, tool);
+    });
+    setupWords(doc);
+    doc.addEventListener('click', (e) => {
+      const t = e.target;
+      if (t.closest('.jte-tbar')) return; // the words toolbar's own buttons
+      if (te) {
+        if (te.el.contains(t)) { e.preventDefault(); return; } // clicks inside the words place the cursor, never follow a link
+        // Clicked somewhere else while typing: save or throw away first, then carry on with what was clicked.
+        e.preventDefault(); e.stopPropagation();
+        const next = t.closest('.jte-tpen') ? tpenFor : t.closest('[data-edit="text"]');
+        const pen = t.closest('.jte-pen');
+        finishText().then((ok) => { if (!ok) return; if (next?.isConnected) startText(next, { x: e.clientX, y: e.clientY }); else if (pen?.isConnected) pen.click(); });
+        return;
+      }
+      if (t.closest('.jte-tpen')) { e.preventDefault(); if (tpenFor) startText(tpenFor); return; }
+      if (t.closest('.jte-pen') || t.closest('[data-hide-preview]')) return;
+      const words = t.closest('[data-edit="text"]');
+      if (words && editableAt(t) === words) { e.preventDefault(); startText(words, { x: e.clientX, y: e.clientY }); return; }
+      const a = t.closest('a[href]');
+      const ctl = t.closest('button, [role=button], input, select, textarea, label, summary');
+      if (ctl && !(a && a.contains(ctl))) return; // the page's own buttons (pause, carousel arrows…) work normally
+      const ed = editableAt(t);
+      if (ed) { e.preventDefault(); openTool(ed.dataset.edit, ed.dataset.editKey || '', ed.dataset.editLabel || ''); return; }
+      if (!a) return;
+      const raw = a.getAttribute('href') || '';
+      if (raw.startsWith('#')) { if (raw === '#') e.preventDefault(); return; } // "#faq" scrolls inside the page
+      e.preventDefault();
+      const to = sitePathOf(raw);
+      const pg = to && pages.find((p) => p.path === to || p.path === to + '/');
+      if (pg) goPage(pg.path);
+      else toast('Links are paused while you edit. Use "Page" at the top to switch pages.');
+    }, true);
+    // Outline only the innermost editable thing under the mouse (a review, not the whole reviews page).
+    let hov = null;
+    doc.addEventListener('mouseover', (e) => {
+      if (e.target.closest?.('.jte-tpen, .jte-tbar')) return;
+      const t = editableAt(e.target);
+      if (t === hov) return;
+      hov?.classList.remove('jte-hover'); hov = t; hov?.classList.add('jte-hover');
+      if (t && t.dataset.edit === 'text') showTpen(t); else hideTpen();
+    });
+    doc.addEventListener('submit', (e) => { e.preventDefault(); e.stopPropagation(); toast('Forms are switched off while you edit.'); }, true);
+    doc.addEventListener('keydown', onEscape);
+    doc.defaultView.addEventListener('scroll', () => { lastScroll = doc.defaultView.scrollY; }, { passive: true });
+    doc.defaultView.addEventListener('resize', () => { placeBar(); hideTpen(); });
+    if (keepScroll) doc.defaultView.scrollTo(0, keepScroll);
+    lastScroll = keepScroll;
+    if (!pens.size && !doc.querySelector('[data-edit="text"]')) {
+      over.hidden = false; over.className = 'vis__over vis__over--hint';
+      over.innerHTML = nothingAtAll
+        ? `<p>Nothing on your website is set up for you to change yourself yet. Contact ${supportLine()}.</p>`
+        : '<p>Nothing to change on this page – try another page.</p>';
+    }
+    markOpen();
+    if (refocusKey) { const k = refocusKey; refocusKey = null; refocusTo(k); }
+  });
+
+  // The page could not be shown (signed out, server error, no internet): say so instead of a broken frame.
+  async function previewFailed() {
+    let why = 'error';
+    try {
+      const r = await fetch(frame.src, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual' });
+      if (r.type === 'opaqueredirect' || r.status === 401 || r.status === 403) why = 'signin';
+    } catch { why = navigator.onLine === false ? 'offline' : 'error'; }
+    if (!alive()) return;
+    frame.classList.add('is-broken');
+    over.hidden = false; over.className = 'vis__over vis__over--bad';
+    over.innerHTML = {
+      signin: '<h2>You were signed out</h2><p>For your safety the editor signs you out after a while. Nothing was lost. Click <strong>Sign in again</strong>, sign in, then come back here and click <strong>Try again</strong>.</p><p><a class="btn btn--primary" href="/" target="_blank" rel="noopener">Sign in again</a> <button type="button" class="btn" data-retry-page>Try again</button></p>',
+      offline: '<h2>No internet connection</h2><p>Your page can\'t be shown right now. Nothing was lost. Try again when you\'re back online.</p><p><button type="button" class="btn btn--primary" data-retry-page>Try again</button></p>',
+      error: `<h2>Your page couldn't be shown</h2><p>Your changes are safe. Please try again in a minute.</p><p><button type="button" class="btn btn--primary" data-retry-page>Try again</button></p><p class="hint">If this keeps happening, contact ${supportLine()}.</p>`,
+    }[why];
+    over.setAttribute('role', 'alert');
+  }
+
+  const showError = (html) => { if (!alive()) return; msg.innerHTML = html; msg.scrollIntoView({ block: 'nearest' }); };
+
+  // "Reload latest" anywhere (bar or panel): fetch every source again, redraw the page, reopen the panel.
+  async function reloadLatest() {
+    const reopen = open && { ...open };
+    if (!(await closeTool({ refocus: false }))) return;
+    try { await Promise.all(sources.map(async (s) => { S[s.id] = await s.load(); })); } catch (err) { return showError(errorNote(err)); }
+    if (!alive()) return;
+    msg.innerHTML = ''; toast.clear(); paintBar(); load();
+    if (reopen) openTool(reopen.kind, reopen.key, reopen.label);
+  }
+
+  const startWatch = (commit) => {
+    if (!commit) return;
+    const job = { id: 'site', commit, url: me.site.url + '/', verb: 'your changes are on the website', linkLabel: 'View your website', at: Date.now() };
+    store.set(KEYS.pub, job);
+    watchPublish(pubBox, job, { compact: true, onState: paintBar });
+  };
+  const words = (list) => list.map((s) => s.what).join(' and ');
+  const Words = (list) => { const w = words(list); return w.charAt(0).toUpperCase() + w.slice(1); };
+
+  async function publishAll() {
+    if (busy.n || publishing) return;
+    if (unsavedGuard?.()) {
+      showError(`<div class="note note--warn" role="alert" data-typing-note><p>Please save or cancel ${te ? 'the words you are typing on the page' : 'the review you are typing'} first. Then click <strong>Publish</strong>.</p></div>`);
+      if (te) focusText(); else dTitle.focus({ preventScroll: true });
+      return;
+    }
+    const todo = sources.filter(isDirty);
+    if (!todo.length) return;
+    if (!(await confirmBox({ title: 'Put your changes on the website?', body: `This publishes your ${esc(words(todo))} changes. Everyone visiting your website sees them in a few minutes.`, yes: 'Yes, publish', safeDefault: true }))) return;
+    publishing = true; msg.innerHTML = ''; paintBar();
+    const done = [], failed = [];
+    // Each source is published on its own: one going wrong never hides that another one went live.
+    for (const s of todo) {
+      try { const r = await s.publish(S[s.id]); if (r.state) S[s.id] = r.state; done.push(s); startWatch(r.commit); } catch (err) { failed.push({ s, err }); }
+    }
+    publishing = false;
+    if (!alive()) return;
+    if (done.length) await closeTool({ ask: false, refocus: false });
+    paintBar();
+    if (failed.length) {
+      const err = failed[0].err;
+      const extra = `${err.data?.signIn ? ' <a class="btn btn--small" href="/" target="_blank" rel="noopener">Sign in again</a>' : ''}${err.data?.conflict ? ' <button type="button" class="btn btn--small" data-reload>Reload latest</button>' : ''}`;
+      showError(`<div class="note note--bad" role="alert">${done.length ? `<p>✓ ${esc(Words(done))}: being published now.</p>` : ''}<p>${esc(Words(failed.map((x) => x.s)))}: saved, but <strong>not published yet</strong>. ${esc(err.message)}</p><p><button type="button" class="btn btn--small btn--primary" data-retry-publish>Try again</button>${extra}</p></div>`);
+    }
+  }
+
+  async function undoAll() {
+    if (busy.n || publishing) return;
+    if (!(await closeTool({ refocus: false }))) return;
+    const todo = sources.filter(isDirty);
+    if (!todo.length) return;
+    if (!(await confirmBox({ title: 'Undo all your unpublished changes?', body: `Your changes to ${esc(words(todo))} go back to exactly what is on the website now.`, yes: 'Undo all changes', danger: true }))) return;
+    publishing = true; msg.innerHTML = ''; paintBar();
+    const done = [], failed = [];
+    for (const s of todo) { try { S[s.id] = await s.discard(S[s.id]); done.push(s); } catch (err) { failed.push({ s, err }); } }
+    publishing = false;
+    if (!alive()) return;
+    paintBar(); load();
+    if (failed.length) {
+      const err = failed[0].err;
+      showError(`<div class="note note--bad" role="alert">${done.length ? `<p>✓ ${esc(Words(done))}: back to what is on the website.</p>` : ''}<p>${esc(Words(failed.map((x) => x.s)))}: could not be undone. ${esc(err.message)}</p>${err.data?.conflict ? '<p><button type="button" class="btn btn--small" data-reload>Reload latest</button></p>' : ''}</div>`);
+    } else toast('Back to what is on the website now.');
+  }
+
+  vis.querySelectorAll('[data-page]').forEach((b) => b.addEventListener('click', () => goPage(b.dataset.page)));
+  pagesel.addEventListener('change', () => goPage(pagesel.value));
+  pagemore?.addEventListener('change', () => { if (pagemore.value) goPage(pagemore.value); });
+  vis.querySelector('[data-visitor]')?.addEventListener('click', () => setVisitor(!visitor));
+  vis.querySelectorAll('[data-device]').forEach((b) => b.addEventListener('click', () => { device = b.dataset.device; store.set(KEYS.device, device); paintBar(); }));
+  drawer.querySelector('[data-close]').addEventListener('click', () => closeTool());
+  publishBtn.addEventListener('click', publishAll);
+  undoBtn.addEventListener('click', undoAll);
+  // One listener for the buttons inside messages – in the bar, the page area and every panel.
+  vis.addEventListener('click', (e) => {
+    if (e.target.closest('[data-reload]')) { e.preventDefault(); e.stopPropagation(); reloadLatest(); }
+    else if (e.target.closest('[data-retry-publish]')) { msg.innerHTML = ''; publishAll(); }
+    else if (e.target.closest('[data-retry-page]')) load(true);
+  });
+
+  paintBar(); fitPicker(); load();
+  const job = store.get(KEYS.pub);
+  if (job?.commit && (job.id === 'site' || job.id === 'homepage' || job.id === 'reviews')) watchPublish(pubBox, job, { compact: true, onState: paintBar });
+}
+
+/* One photo spot, in the side panel: see it, replace it (click or drop), undo. */
+function spotPanel(root, ctx) {
+  const k = ctx.key; const info = spotInfo()[k] || {};
+  const H = () => ctx.get('homepage');
+  const changed = () => JSON.stringify(H().draft.photos[k]) !== JSON.stringify(H().live.photos[k]);
+  const say = (html) => { if (root.isConnected) root.querySelector('#pmsg').innerHTML = html; };
+  function render(msg = '') {
+    if (!root.isConnected) return;
+    root.innerHTML = `
+      <p><label class="btn btn--primary btn--block file-btn">Replace photo<input type="file" accept="image/*,.heic,.heif" id="pfile" aria-label="Replace photo: ${esc(info.label || k)}"></label></p>
+      <div id="pmsg" aria-live="polite">${msg}</div>
+      <p class="hint">Or drag a photo from a folder onto the photo below. It shows on your page right away.</p>
+      <div class="panel-photo" id="pp"><img src="/api/homepage/spot/${esc(k)}/img?r=${H().revision}" alt="The photo now"></div>
+      ${changed() ? '<p><button type="button" class="btn btn--block" data-undo>Undo – go back to the photo on the website</button></p>' : ''}
+      ${info.where ? `<p class="hint">Shows on: ${esc(info.where)}</p>` : ''}
+      ${info.tip ? `<p class="hint">${esc(info.tip)}</p>` : ''}`;
+    root.querySelector('#pfile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) replace(f); });
+    makeDropZone(root.querySelector('#pp'), (files) => replace(files[0]));
+    root.querySelector('[data-undo]')?.addEventListener('click', async () => {
+      try { const st = await api('POST', `/homepage/spot/${k}/undo`, { baseRevision: H().revision }); ctx.update('homepage', st); render(); toast('Back to the photo that is on the website now.'); }
+      catch (err) { say(errorNote(err)); }
+    });
+  }
+  // The whole upload counts as "saving", so Publish waits for it.
+  const replace = (file) => busyWhile(async () => {
+    try {
+      say('<p class="hint"><span class="spinner" aria-hidden="true"></span> Preparing your photo…</p>');
+      const p = await prepareHero(file, info.min);
+      say('<p class="hint"><span class="spinner" aria-hidden="true"></span> Uploading…</p>');
+      const fd = new FormData();
+      for (const w of [2000, 1400, 800]) fd.append(`w${w}`, p[w].blob, `w${w}.jpg`);
+      if (file.size <= 24 * 1024 * 1024) fd.append('original', file, 'original');
+      fd.append('baseRevision', String(H().revision));
+      ctx.update('homepage', await api('POST', `/homepage/spot/${k}`, fd, { idem: uuid() }));
+      if (root.isConnected) render('<div class="note note--ok"><p>✓ New photo is on your page. Click <strong>Publish</strong> when you\'re happy.</p></div>');
+      else toast(`✓ Your new photo (${info.label || 'photo'}) is on your page.`);
+    } catch (err) {
+      // Someone else changed the photos: show the newest version, so the next try works.
+      if (err.status === 409) { try { ctx.update('homepage', await api('GET', '/homepage')); render(); } catch { /* ignore */ } }
+      if (root.isConnected) say(errorNote(err)); else toast(`Your photo (${info.label || 'photo'}) was not saved: ${err.message}`, 10000);
+    }
+  });
+  render();
+}
+
+/* ---------------- start (list view) ---------------- */
+
+// Photo spots come from the server (client.config.json → photoSpots).
+const spotInfo = () => me.spots || {};
+
+async function startScreen() {
+  setScreen('<p class="loading">Loading your website photos…</p>');
+  let H = await api('GET', '/homepage');
+  let banner = '';
+  const changed = (k) => JSON.stringify(H.draft.photos[k]) !== JSON.stringify(H.live.photos[k]);
+  const slidesChanged = () => JSON.stringify({ ...H.draft, photos: 0 }) !== JSON.stringify({ ...H.live, photos: 0 });
+
+  function render() {
+    const d = H.draft;
+    const first = d.slides[0];
+    app.innerHTML = `
+    <p><a class="back" href="#/">← Back to editing on the page</a></p>
+    <h1>Your website (list view)</h1>
+    <h2 class="section-h">Photos</h2>
+    ${how(['Find the photo you want to change below.', 'Click <strong>Replace photo</strong> and pick a new one — or drag a photo from a folder onto it.', 'Click <strong>Preview</strong> to see how the page will look.', 'When you like it, click the <strong>Publish</strong> button at the bottom of the screen.'])}
+    <div id="msg">${banner}</div>
+    <div id="pub"></div>
+
+    <ul class="spots">
+      ${me.features.slideshow && first ? `<li class="spot${slidesChanged() ? ' spot--changed' : ''}">
+        <a class="spot__img" href="#/homepage"><img src="/api/homepage/photo/${esc(first.id)}?w=800" alt="" data-pos="${esc(first.focus)}"></a>
+        <div class="spot__body">
+          <h2>Homepage slideshow</h2>
+          <p class="spot__where">The big photos at the top of your homepage · ${d.autoplay === false ? 'One still photo' : `Slideshow of ${d.slides.length} photo${d.slides.length === 1 ? '' : 's'}`}</p>
+          ${slidesChanged() ? '<p class="chip chip--draft">Changed – not published yet</p>' : ''}
+          <p><a class="btn btn--primary" href="#/homepage">Change slideshow photos</a></p>
+          <p class="hint">Choose slideshow or one still photo, add or remove photos, change the order and speed.</p>
+        </div>
+      </li>` : ''}
+      ${Object.entries(spotInfo()).map(([k, info]) => `
+      <li class="spot${changed(k) ? ' spot--changed' : ''}" data-spot="${k}">
+        <div class="spot__img spot__img--${k}"><img src="/api/homepage/spot/${k}/img?r=${H.revision}" alt=""></div>
+        <div class="spot__body">
+          <h2>${esc(info.label)}</h2>
+          <p class="spot__where">Shows on: ${esc(info.where)}</p>
+          ${changed(k) ? '<p class="chip chip--draft">Changed – not published yet</p>' : ''}
+          <p class="spot__btns">
+            <label class="btn btn--primary file-btn">Replace photo<input type="file" accept="image/*,.heic,.heif" data-spot-file="${k}" aria-label="Replace ${esc(info.label)}"></label>
+            <a class="btn" href="/api/homepage/preview?page=${encodeURIComponent(k)}" target="_blank" rel="noopener">Preview</a>
+            ${changed(k) ? `<button type="button" class="btn btn--small" data-spot-undo="${k}">Undo</button>` : ''}
+          </p>
+          <p class="hint">${info.tip ? esc(info.tip) + ' ' : ''}You can also drag a photo onto this box.</p>
+          <p class="spot__status" aria-live="polite"></p>
+        </div>
+      </li>`).join('')}
+    </ul>
+
+    ${me.features.reviews ? `<h2 class="section-h">Client reviews</h2>
+    <ul class="spots"><li class="spot spot--reviews">
+      <div class="spot__body">
+        <h2>Client reviews</h2>
+        <p class="spot__where">The reviews shown on your website.</p>
+        <p><a class="btn btn--primary" href="#/reviews">Add, edit or remove reviews</a></p>
+      </div>
+    </li></ul>` : ''}
+
+    <p class="hint">See your website: <a href="${esc(me.site.url)}/" target="_blank" rel="noopener">${esc(me.site.url.replace(/^https?:\/\//, ''))}</a></p>
+    <p class="hint">Need something else changed on the website? Contact ${supportLine()}.</p>
+
+    <div class="actions"><p class="actions__state">${H.hasUnpublishedChanges ? 'You have photo changes that are not on the website yet' : 'The website is up to date'}</p><div class="actions__in actions__in--1">
+      <button type="button" class="btn btn--primary btn--publish" data-publish ${H.hasUnpublishedChanges ? '' : 'disabled'}>Publish</button>
+    </div></div>`;
+    applyFocus(app);
+    bind();
+    const job = store.get(KEYS.pub);
+    if (job?.id === 'homepage' || job?.id === 'site') watchPublish(document.getElementById('pub'), job);
+  }
+
+  const showError = (err) => { const m = document.getElementById('msg'); m.innerHTML = errorNote(err); m.scrollIntoView({ block: 'nearest' }); };
+
+  async function replaceSpot(k, file) {
+    const li = app.querySelector(`[data-spot="${k}"]`);
+    const status = li.querySelector('.spot__status');
+    try {
+      status.textContent = 'Preparing your photo…';
+      const p = await prepareHero(file, spotInfo()[k].min);
+      status.textContent = 'Uploading…';
+      const fd = new FormData();
+      for (const w of [2000, 1400, 800]) fd.append(`w${w}`, p[w].blob, `w${w}.jpg`);
+      if (file.size <= 24 * 1024 * 1024) fd.append('original', file, 'original');
+      fd.append('baseRevision', String(H.revision));
+      H = await api('POST', `/homepage/spot/${k}`, fd, { idem: uuid() });
+      banner = `<div class="note note--ok"><p>✓ New photo added to <strong>${esc(spotInfo()[k].label)}</strong>. Click <strong>Preview</strong> to see it, then <strong>Publish</strong> at the bottom.</p></div>`;
+      render();
+    } catch (err) {
+      if (err.status === 409) { try { H = await api('GET', '/homepage'); } catch { /* ignore */ } }
+      status.innerHTML = `<strong>That photo was not added:</strong> ${esc(err.message)}`;
+    }
+  }
+
+  function bind() {
+    app.querySelectorAll('[data-spot-file]').forEach((inp) => inp.addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) replaceSpot(inp.dataset.spotFile, f); }));
+    app.querySelectorAll('[data-spot]').forEach((li) => makeDropZone(li, (files) => replaceSpot(li.dataset.spot, files[0])));
+    app.querySelectorAll('[data-spot-undo]').forEach((b) => b.addEventListener('click', async () => {
+      try { H = await api('POST', `/homepage/spot/${b.dataset.spotUndo}/undo`, { baseRevision: H.revision }); banner = ''; render(); toast('Back to the photo that is on the website now.'); } catch (err) { showError(err); }
+    }));
+    document.getElementById('msg').addEventListener('click', async (e) => { if (e.target.matches('[data-reload]')) { try { H = await api('GET', '/homepage'); banner = ''; render(); } catch (err) { showError(err); } } });
+    app.querySelector('[data-publish]').addEventListener('click', async () => {
+      const list = [slidesChanged() ? 'the homepage slideshow' : null, ...Object.keys(spotInfo()).filter(changed).map((k) => spotInfo()[k].label.toLowerCase())].filter(Boolean);
+      if (!(await confirmBox({ title: 'Put your new photos on the website?', body: `This updates: ${esc(list.join(', '))}.`, yes: 'Yes, publish', safeDefault: true }))) return;
+      app.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+      try {
+        const r = await api('POST', '/homepage/publish', { baseRevision: H.revision }, { idem: uuid(), free: true });
+        H = r.homepage;
+        store.set(KEYS.pub, { id: 'homepage', commit: r.commit, url: me.site.url + '/', verb: 'your photos are on the website', linkLabel: 'View your website', at: Date.now() });
+        banner = ''; render();
+      } catch (err) { render(); showError(err); }
+    });
+  }
+  render();
+}
+
+/* ---------------- homepage photos ---------------- */
+
+const SPEEDS = [{ label: 'Slow', sub: 'about 10 seconds each', v: 10 }, { label: 'Normal', sub: 'about 7 seconds each', v: 7 }, { label: 'Fast', sub: 'about 4 seconds each', v: 4 }];
+const FOCUS = [{ label: 'Top', v: '50% 15%' }, { label: 'Middle', v: '50% 50%' }, { label: 'Bottom', v: '50% 85%' }];
+const nearestFocus = (f) => { const y = Number(String(f || '').split(' ')[1]?.replace('%', '')) || 50; return FOCUS.reduce((a, b) => (Math.abs(parseInt(b.v.split(' ')[1], 10) - y) < Math.abs(parseInt(a.v.split(' ')[1], 10) - y) ? b : a)).v; };
+const nearestSpeed = (n) => SPEEDS.reduce((a, b) => (Math.abs(b.v - n) < Math.abs(a.v - n) ? b : a)).v;
+
+async function prepareHero(file, minEdge = 1200) {
+  if (file.size > 40 * 1024 * 1024) throw new Error('This photo is over 40 MB. Please pick a smaller one.');
+  let bmp;
+  try { bmp = await decode(file); } catch {
+    throw new Error(looksHeic(file) ? 'This iPhone photo (HEIC) could not be opened on this device. On your iPhone: Settings → Camera → Formats → "Most Compatible", or text the photo to James.' : 'This file could not be opened as a photo. Please choose a JPG or iPhone photo.');
+  }
+  if (Math.max(bmp.width, bmp.height) < minEdge) throw new Error('This photo is too small — it would look blurry on the website. Please use a larger photo.');
+  const out = { tall: bmp.height > bmp.width };
+  for (const w of [2000, 1400, 800]) out[w] = await drawTo(bmp, w, w === 800 ? 0.8 : 0.82);
+  bmp.close?.();
+  return out;
+}
+
+// Slideshow controls. Used full-screen (#/homepage) and inside the side panel of the on-page editor
+// (embedded: no Back link, no Preview/Publish bar, no own Undo – "Undo all changes" covers it;
+// onChange(H) runs after every saved change).
+async function homepageScreen(root = app, opts = {}) {
+  const embedded = !!opts.embedded;
+  if (embedded) root.innerHTML = '<p class="loading">Loading your photos…</p>'; else setScreen('<p class="loading">Loading your homepage photos…</p>');
+  let H = opts.H || await api('GET', '/homepage');
+  let lastRev = H.revision;
+  const SAVED = embedded ? 'Saved – your page shows it now. Click Publish when you\'re happy.' : null;
+  let banner = '';
+  const gone = () => embedded && !root.isConnected; // the panel was closed (or another one opened)
+
+  function render() {
+    if (gone()) return;
+    const d = H.draft;
+    const speed = nearestSpeed(d.seconds);
+    const choice = `<section class="choice-box">
+    <h2>Slideshow or one still photo?</h2>
+    <fieldset><legend class="sr">Should the photos change by themselves?</legend><div class="radios">
+      <label class="radio"><input type="radio" name="autoplay" value="on" ${d.autoplay !== false ? 'checked' : ''}> <span><strong>Slideshow</strong> (recommended)<br><span class="hint">Your photos take turns, one after another</span></span></label>
+      <label class="radio"><input type="radio" name="autoplay" value="off" ${d.autoplay === false ? 'checked' : ''}> <span><strong>One still photo</strong><br><span class="hint">Only Photo 1 shows — it never changes</span></span></label>
+    </div></fieldset>
+    </section>`;
+    const photos = `<h2>Your photos</h2>
+    ${d.slides.length > 1 ? '<p class="hint">To change the order, drag a photo by its <strong>⠿ Drag</strong> handle.</p>' : ''}
+    <ul class="photos photos--rows" id="hphotos">${d.slides.map((sl, i) => `<li class="photo${i === 0 ? ' photo--cover' : ''}" data-id="${esc(sl.id)}">
+      <div class="photo__img"><img src="/api/homepage/photo/${esc(sl.id)}?w=800" alt="Homepage photo ${i + 1}" loading="lazy" data-pos="${esc(sl.focus)}"></div>
+      <div class="photo__bar">
+        ${d.slides.length > 1 ? handleHtml(i + 1) : ''}
+        <span class="photo__label">${i === 0 ? '<span class="cover">★ Photo 1 – shows first</span>' : `Photo ${i + 1}`}</span>
+      </div>
+      <div class="photo__focus" role="group" aria-label="Which part of photo ${i + 1} matters most">
+        <span class="photo__focus-label">Which part matters most? (kept in view on phones)</span>
+        ${FOCUS.map((f) => `<button type="button" class="seg${nearestFocus(sl.focus) === f.v ? ' is-on' : ''}" data-focus="${esc(sl.id)}" data-v="${f.v}" aria-pressed="${nearestFocus(sl.focus) === f.v}">${f.label}</button>`).join('')}
+      </div>
+      <div class="photo__bar">
+        ${i > 0 ? `<button type="button" class="btn btn--small" data-first="${esc(sl.id)}">Show first</button>` : ''}
+        <span class="btn btn--small file-btn">Replace photo<input type="file" accept="image/*,.heic,.heif" data-replace="${esc(sl.id)}" aria-label="Replace photo ${i + 1}"></span>
+        ${d.slides.length > 1 ? `<button type="button" class="btn btn--small btn--danger" data-remove="${esc(sl.id)}" aria-label="Remove photo ${i + 1}">Remove</button>` : ''}
+      </div></li>`).join('')}</ul>
+    ${dropZoneHtml('addhero', '+ Add photos', 'Click to choose photos — or drag them here from a folder')}
+    <ul class="upload-list" id="uploads" aria-live="polite"></ul>
+    <p class="hint">Wide (landscape) photos look best. Tall photos get trimmed at the top and bottom.</p>`;
+    const settings = `<div ${d.autoplay === false ? 'hidden' : ''}>
+    <h2>Slideshow speed</h2>
+    <fieldset><legend class="sr">How fast should the photos change?</legend><div class="radios">
+      ${SPEEDS.map((sp) => `<label class="radio"><input type="radio" name="speed" value="${sp.v}" ${speed === sp.v ? 'checked' : ''}> <span><strong>${sp.label}</strong>${sp.v === 7 ? ' (recommended)' : ''}<br><span class="hint">${sp.sub}</span></span></label>`).join('')}
+    </div></fieldset>
+
+    <h2>How the photos change</h2>
+    <fieldset><legend class="sr">How should one photo change to the next?</legend><div class="radios">
+      <label class="radio"><input type="radio" name="fade" value="off" ${d.fade ? '' : 'checked'}> <span><strong>Slide</strong> (recommended)<br><span class="hint">The next photo slides in from the side</span></span></label>
+      <label class="radio"><input type="radio" name="fade" value="on" ${d.fade ? 'checked' : ''}> <span><strong>Fade</strong><br><span class="hint">Each photo slowly fades into the next</span></span></label>
+    </div></fieldset>
+    ${d.slides.length < 2 ? '<p class="hint">Add a second photo to see the slideshow move.</p>' : ''}
+    </div>`;
+    root.innerHTML = `
+    ${embedded ? '' : '<a class="back" href="#/list">← Back to all photos</a>\n    <h1>Homepage slideshow</h1>'}
+    ${embedded ? '' : how(['First choose <strong>Slideshow</strong> or <strong>One still photo</strong> in the box below.', 'Add photos with the <strong>+ Add photos</strong> box. <strong>Photo 1 shows first.</strong> Change the order by dragging <strong>⠿ Drag</strong>, or click <strong>Show first</strong>.', 'Click <strong>Preview</strong> to look, then <strong>Publish</strong> to put it on your website.'])}
+    <div id="msg">${banner}</div>
+    ${embedded ? '' : '<div id="pub"></div>'}
+    ${embedded ? `${photos}${choice}${settings}` : `${choice}${photos}${settings}
+    ${H.hasUnpublishedChanges ? '<p class="spaced"><button type="button" class="btn btn--small" data-discard>Undo my unpublished changes</button></p>' : ''}
+    <div class="actions"><p class="actions__state">${H.hasUnpublishedChanges ? 'You have changes that are not on the website yet' : 'The website is up to date'}</p><div class="actions__in actions__in--2">
+      <a class="btn" href="/api/homepage/preview" target="_blank" rel="noopener">Preview</a>
+      <button type="button" class="btn btn--primary" data-publish ${H.hasUnpublishedChanges ? '' : 'disabled'}>Publish</button>
+    </div></div>`}`;
+    applyFocus(root);
+    bind();
+    if (embedded && H.revision !== lastRev) { lastRev = H.revision; opts.onChange?.(H); }
+    const job = store.get(KEYS.pub);
+    if (!embedded && (job?.id === 'homepage' || job?.id === 'site')) watchPublish(root.querySelector('#pub'), job);
+  }
+
+  const showError = (err) => { if (gone()) return; const m = root.querySelector('#msg'); m.innerHTML = errorNote(err); m.scrollIntoView({ block: 'nearest' }); };
+  const ok = (msg) => { banner = msg ? `<div class="note note--ok"><p>${msg}</p></div>` : ''; render(); };
+
+  async function save(method, path, body) {
+    try { H = await api(method, path, { ...body, baseRevision: H.revision }); return true; } catch (err) {
+      // Someone else changed the slideshow: show their version (the choices snap back to what is saved) and say why.
+      toast.clear(); banner = '';
+      if (err.status === 409) { try { H = await api('GET', '/homepage'); } catch { /* ignore */ } }
+      render(); showError(err);
+      return false;
+    }
+  }
+  const order = () => H.draft.slides.map((x) => x.id);
+  const arrange = async (ord, focus) => { if (await save('PUT', '/homepage/photos', { order: ord, focus })) { ok(''); toast(SAVED || 'Saved. Click Publish when you\'re ready.'); } };
+
+  // The whole upload (preparing + sending) counts as "saving", so Publish waits for it.
+  const upload = (files, replaceId = null) => busyWhile(async () => {
+    if (!files.length || gone()) return;
+    const list = root.querySelector('#uploads');
+    list.innerHTML = '';
+    const rows = files.map((f, i) => { const li = document.createElement('li'); li.textContent = `Photo ${i + 1} of ${files.length}: waiting…`; list.appendChild(li); return li; });
+    let failed = 0, tall = 0;
+    for (let i = 0; i < files.length; i++) {
+      const li = rows[i];
+      try {
+        li.textContent = `Photo ${i + 1} of ${files.length}: preparing…`;
+        const p = await prepareHero(files[i]);
+        if (p.tall) tall++;
+        li.textContent = `Photo ${i + 1} of ${files.length}: uploading…`;
+        const fd = new FormData();
+        for (const w of [2000, 1400, 800]) fd.append(`w${w}`, p[w].blob, `w${w}.jpg`);
+        if (files[i].size <= 24 * 1024 * 1024) fd.append('original', files[i], 'original');
+        fd.append('baseRevision', String(H.revision));
+        H = await api('POST', replaceId ? `/homepage/photos/${replaceId}/replace` : '/homepage/photos', fd, { idem: uuid() });
+        if (embedded) { lastRev = H.revision; opts.onChange?.(H); } // the page shows it even if the panel was closed meanwhile
+        li.textContent = `Photo ${i + 1} of ${files.length}: ✓ added`;
+      } catch (err) {
+        failed++;
+        li.innerHTML = `<strong>Photo ${i + 1} (${esc(files[i].name || 'photo')}) was not added:</strong> ${esc(err.message)}`;
+        if (err.status === 409) { try { H = await api('GET', '/homepage'); if (embedded) { lastRev = H.revision; opts.onChange?.(H); } } catch { /* ignore */ } }
+      }
+    }
+    const added = files.length - failed;
+    if (gone()) { toast(failed ? `${added} of ${files.length} slideshow photos were added. Open the slideshow to see what went wrong.` : `✓ ${added === 1 ? 'Photo' : added + ' photos'} added to the slideshow.`, 8000); return; }
+    const summary = list.innerHTML;
+    banner = failed
+      ? `<div class="note note--warn"><p>${added} of ${files.length} photos added. The others are listed below with what to do.</p></div>`
+      : `<div class="note note--ok"><p>${added === 1 ? 'Photo added' : added + ' photos added'} ${replaceId ? '' : 'to the end of the slideshow'}. ${embedded ? 'It shows on your page now. ' : ''}Drag to change the order, then click <strong>Publish</strong>.${tall ? ' Tip: tall photos get trimmed – use "Which part matters most?" to choose what shows.' : ''}</p></div>`;
+    render();
+    if (failed) root.querySelector('#uploads').innerHTML = summary;
+    else if (!replaceId && added) {
+      const li = root.querySelector('#hphotos > li:last-child');
+      li?.classList.add('is-new'); li?.scrollIntoView({ block: 'nearest' });
+    }
+  });
+
+  function bind() {
+    root.querySelector('#addhero').addEventListener('change', (e) => { const f = [...e.target.files]; e.target.value = ''; upload(f); });
+    makeDropZone(root.querySelector('#addhero').closest('.dropzone'), (f) => upload(f));
+    makeSortable(root.querySelector('#hphotos'), (ord) => arrange(ord));
+    root.querySelectorAll('[data-replace]').forEach((inp) => inp.addEventListener('change', (e) => { const f = [...e.target.files].slice(0, 1); e.target.value = ''; upload(f, inp.dataset.replace); }));
+    root.querySelectorAll('[data-first]').forEach((b) => b.addEventListener('click', () => arrange([b.dataset.first, ...order().filter((x) => x !== b.dataset.first)])));
+    root.querySelectorAll('[data-focus]').forEach((b) => b.addEventListener('click', () => arrange(order(), { [b.dataset.focus]: b.dataset.v })));
+    root.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmBox({ title: 'Remove this photo from the slideshow?', body: 'Visitors keep seeing it until you publish. You can undo before publishing.', yes: 'Remove photo', danger: true }))) return;
+      if (await save('DELETE', `/homepage/photos/${b.dataset.remove}?baseRevision=${H.revision}`)) { ok(''); toast(SAVED || 'Photo removed. Click Publish when you\'re ready.'); }
+    }));
+    root.querySelectorAll('input[name=speed], input[name=fade], input[name=autoplay]').forEach((r) => r.addEventListener('change', async () => {
+      const seconds = Number(root.querySelector('input[name=speed]:checked').value);
+      const fade = root.querySelector('input[name=fade]:checked').value === 'on';
+      const autoplay = root.querySelector('input[name=autoplay]:checked').value === 'on';
+      if (await save('PUT', '/homepage/settings', { seconds, fade, autoplay })) { ok(''); toast(SAVED || 'Saved. Click Preview to watch it, or Publish to put it live.'); }
+    }));
+    if (embedded) return; // the on-page editor handles "Reload latest", Undo all and Publish itself
+    root.querySelector('[data-discard]')?.addEventListener('click', async () => {
+      if (!(await confirmBox({ title: 'Undo unpublished changes?', body: 'The slideshow and the other website photos go back to exactly what is on the website now.', yes: 'Undo changes', danger: true }))) return;
+      if (await save('POST', '/homepage/discard', {})) ok('Changes undone.');
+    });
+    root.querySelector('#msg').addEventListener('click', async (e) => { if (e.target.matches('[data-reload]')) { try { H = await api('GET', '/homepage'); ok(''); } catch (err) { showError(err); } } });
+    root.querySelector('[data-publish]')?.addEventListener('click', async () => {
+      if (!(await confirmBox({ title: 'Put these photos on your homepage?', body: H.draft.autoplay === false ? `One still photo (Photo 1).` : `${H.draft.slides.length} photo${H.draft.slides.length === 1 ? '' : 's'}, slideshow, ${SPEEDS.find((x) => x.v === nearestSpeed(H.draft.seconds)).label.toLowerCase()} speed, ${H.draft.fade ? 'fading' : 'sliding'} between photos.`, yes: 'Yes, publish', safeDefault: true }))) return;
+      root.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      try {
+        const r = await api('POST', '/homepage/publish', { baseRevision: H.revision }, { idem: uuid(), free: true });
+        H = r.homepage;
+        store.set(KEYS.pub, { id: 'homepage', commit: r.commit, url: me.site.url + '/', verb: 'your homepage is updated', linkLabel: 'View your homepage', at: Date.now() });
+        banner = ''; render();
+      } catch (err) { render(); showError(err); }
+    });
+  }
+  render();
+}
+
+/* ---------------- client reviews ---------------- */
+
+const ROLES = ['', 'Buyer', 'Seller', 'Buyer and seller'];
+const fmtDay = (d) => { try { return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }); } catch { return d; } };
+
+function reviewsPublishBar(R) {
+  return `<div class="actions"><p class="actions__state">${R.hasUnpublishedChanges ? 'You have review changes that are not on the website yet' : 'The website is up to date'}</p><div class="actions__in actions__in--2">
+      <a class="btn" href="/api/reviews/preview" target="_blank" rel="noopener">Preview</a>
+      <button type="button" class="btn btn--primary" data-publish ${R.hasUnpublishedChanges ? '' : 'disabled'}>Publish</button>
+    </div></div>`;
+}
+
+async function bindReviewsPublish(getR, setR, rerender, showError) {
+  app.querySelector('[data-publish]')?.addEventListener('click', async () => {
+    const R = getR();
+    if (!(await confirmBox({ title: 'Put your review changes on the website?', body: `Your website will show ${R.draft.items.length} review${R.draft.items.length === 1 ? '' : 's'}.`, yes: 'Yes, publish', safeDefault: true }))) return;
+    app.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+    try {
+      const r = await api('POST', '/reviews/publish', { baseRevision: R.revision }, { idem: uuid(), free: true });
+      setR(r.reviews);
+      store.set(KEYS.pub, { id: 'reviews', commit: r.commit, url: me.site.url + (r.checkPath || '/reviews/'), verb: 'your reviews are on the website', linkLabel: 'View your reviews', at: Date.now() });
+      rerender();
+    } catch (err) { rerender(); showError(err); }
+  });
+}
+
+// Reviews list. Full screen (#/reviews) or inside the on-page editor's side panel (embedded: Change/Add open
+// the form in the same panel through opts.edit(slug); opts.onChange(R) after every saved change).
+async function reviewsScreen(root = app, opts = {}) {
+  const embedded = !!opts.embedded;
+  if (embedded) root.innerHTML = '<p class="loading">Loading your reviews…</p>'; else setScreen('<p class="loading">Loading your reviews…</p>');
+  let R = opts.R || await api('GET', '/reviews');
+  const changed = (x) => { R = x; if (embedded) opts.onChange?.(R); };
+  const gone = () => embedded && !root.isConnected;
+  let banner = '';
+  const liveBySlug = () => new Map(R.live.items.map((x) => [x.slug, JSON.stringify(x)]));
+
+  // After a move: which row moved and which button was pressed (focus goes back to it), and the short note.
+  let moved = null;
+  let moving = false;
+  const ORDER_SAVED = embedded ? 'Order saved – shows on your page now. Click Publish when you\'re happy.' : 'Order saved – not on the website yet. Click Publish when you\'re happy.';
+
+  function render() {
+    if (gone()) return;
+    const live = liveBySlug();
+    const shown = R.draft.items; // the order they show in on the website (first = shows first)
+    const many = shown.length > 1;
+    const removedCount = R.live.items.filter((x) => !R.draft.items.some((d) => d.slug === x.slug)).length;
+    const both = (list, other) => list.filter((x) => other.some((y) => y.slug === x.slug)).map((x) => x.slug).join();
+    const reordered = both(R.draft.items, R.live.items) !== both(R.live.items, R.draft.items);
+    const scrollBox = embedded ? root : null;
+    const keepScroll = scrollBox ? scrollBox.scrollTop : 0;
+    root.innerHTML = `
+    ${embedded ? '' : '<a class="back" href="#/">← Back</a>\n    <h1>Client reviews</h1>'}
+    ${embedded ? '<p class="hint">Click <strong>Change</strong> to fix a review, or add a new one. Changes show on your page right away.</p>' : how(['To add a review, click <strong>+ Add a review</strong> and paste it in. New reviews go to the top.', 'To fix one, click <strong>Change</strong> next to it. To take one off, click <strong>Remove</strong>.', 'To change the order, drag a review by <strong>⠿ Drag</strong>, or click <strong>Move up</strong> / <strong>Move down</strong>. Review 1 shows first.', 'Click <strong>Preview</strong> to look, then <strong>Publish</strong> at the bottom.'])}
+    <div id="msg">${banner}</div>
+    ${embedded ? '' : '<div id="pub"></div>'}
+    <p><a class="btn btn--primary${embedded ? ' btn--block' : ''}" href="#/reviews/new" data-add>+ Add a review</a></p>
+    ${removedCount ? `<p class="chip chip--draft">${removedCount} review${removedCount === 1 ? '' : 's'} removed – not published yet</p>` : ''}
+    ${reordered ? '<p class="chip chip--draft">New order – not published yet</p>' : ''}
+    ${many ? '<p class="hint order-hint">Drag or use <strong>Move up</strong> / <strong>Move down</strong>. Review 1 shows first.</p>' : ''}
+    <ul class="reviews" id="rlist">${shown.map((t, i) => {
+      const state = !live.has(t.slug) ? 'New – not published yet' : live.get(t.slug) !== JSON.stringify(t) ? 'Changed – not published yet' : '';
+      const n = i + 1;
+      return `<li class="review${state ? ' review--changed' : ''}${moved?.slug === t.slug ? ' is-moved' : ''}" data-id="${esc(t.slug)}">
+        ${many ? `<div class="review__order">
+          <p class="review__pos"><span class="review__num">${n}</span>${i === 0 ? ' – shows first' : ''}</p>
+          ${handleHtml(n, 'review')}
+          <div class="review__move">
+            <button type="button" class="btn btn--small" data-move="up" data-slug="${esc(t.slug)}" aria-label="Move up – review ${n}, ${esc(t.title)}" ${i === 0 ? 'disabled' : ''}><span aria-hidden="true">↑</span> Move up</button>
+            <button type="button" class="btn btn--small" data-move="down" data-slug="${esc(t.slug)}" aria-label="Move down – review ${n}, ${esc(t.title)}" ${i === shown.length - 1 ? 'disabled' : ''}><span aria-hidden="true">↓</span> Move down</button>
+          </div>
+        </div>` : ''}
+        ${moved?.slug === t.slug && moved.note ? `<p class="note note--ok review__saved" role="status">${esc(moved.note)}</p>` : ''}
+        <div class="review__head"><strong class="review__title">${esc(t.title)}</strong><span class="review__meta">${t.client ? esc(t.client) + ' · ' : ''}${t.role ? esc(t.role) + ' · ' : ''}${esc(fmtDay(t.date))}</span></div>
+        ${state ? `<p class="chip chip--draft">${state}</p>` : ''}
+        <p class="review__text">${esc((t.text || []).join(' ').slice(0, 220))}${(t.text || []).join(' ').length > 220 ? '…' : ''}</p>
+        <p class="review__btns"><a class="btn btn--small" href="#/reviews/edit/${encodeURIComponent(t.slug)}" data-edit-review="${esc(t.slug)}">Change</a><button type="button" class="btn btn--small btn--danger" data-remove="${esc(t.slug)}">Remove</button></p>
+      </li>`;
+    }).join('')}</ul>
+    ${R.hasUnpublishedChanges && !embedded ? '<p><button type="button" class="btn btn--small" data-discard>Undo my unpublished changes</button></p>' : ''}
+    ${embedded ? '' : reviewsPublishBar(R)}`;
+    bind();
+    if (scrollBox) scrollBox.scrollTop = keepScroll; // redrawing the list never jumps the panel back to the top
+    if (moved) {
+      // Keep the moved review in view and the keyboard where it was (the pressed button, or the handle).
+      const li = [...root.querySelectorAll('#rlist > li')].find((x) => x.dataset.id === moved.slug);
+      const btn = li && (moved.by === 'handle' ? li.querySelector('[data-handle]') : li.querySelector(`[data-move="${moved.by}"]:not([disabled])`) || li.querySelector('[data-move]:not([disabled])') || li.querySelector('[data-handle]'));
+      li?.scrollIntoView({ block: 'nearest' });
+      btn?.focus({ preventScroll: true });
+    }
+    const job = store.get(KEYS.pub);
+    if (!embedded && (job?.id === 'reviews' || job?.id === 'site')) watchPublish(root.querySelector('#pub'), job);
+  }
+  const showError = (err) => { if (gone()) return; const m = root.querySelector('#msg'); m.innerHTML = errorNote(err); m.scrollIntoView({ block: 'nearest' }); };
+
+  // Save a new order straight away (Publish waits for it). by = 'up' | 'down' | 'handle' (what to focus afterwards).
+  const saveOrder = (slugs, slug, by) => busyWhile(async () => {
+    if (moving) { render(); return; } // the previous move is still saving: put the list back as it is saved
+    moving = true;
+    root.querySelectorAll('[data-move], [data-handle]').forEach((b) => { b.disabled = true; });
+    try {
+      changed(await api('POST', '/reviews/order', { slugs, baseRevision: R.revision }));
+      banner = ''; moved = { slug, by, note: ORDER_SAVED };
+    } catch (err) {
+      moved = { slug, by };
+      if (err.status === 409 || err.status === 400) { try { changed(await api('GET', '/reviews')); } catch { /* keep what we have */ } }
+      moving = false; render(); showError(err); moved = null;
+      return;
+    }
+    moving = false;
+    render();
+    moved = null; // the note shows once; the next redraw drops it
+  });
+
+  function bind() {
+    const order = () => R.draft.items.map((x) => x.slug);
+    root.querySelectorAll('[data-move]').forEach((b) => b.addEventListener('click', () => {
+      const o = order(); const i = o.indexOf(b.dataset.slug); const j = i + (b.dataset.move === 'up' ? -1 : 1);
+      if (i < 0 || j < 0 || j >= o.length) return;
+      [o[i], o[j]] = [o[j], o[i]];
+      saveOrder(o, b.dataset.slug, b.dataset.move);
+    }));
+    makeSortable(root.querySelector('#rlist'), (o, slug) => saveOrder(o, slug, 'handle'));
+    if (embedded) {
+      root.querySelector('[data-add]').addEventListener('click', (e) => { e.preventDefault(); opts.edit(null); });
+      root.querySelectorAll('[data-edit-review]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); opts.edit(a.dataset.editReview); }));
+    }
+    root.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', async () => {
+      const t = R.draft.items.find((x) => x.slug === b.dataset.remove);
+      if (!(await confirmBox({ title: 'Remove this review?', body: `"${esc(t?.title || '')}" comes off the website when you publish. You can undo before publishing.`, yes: 'Remove review', danger: true }))) return;
+      try { changed(await api('DELETE', `/reviews/item/${encodeURIComponent(b.dataset.remove)}?baseRevision=${R.revision}`)); banner = ''; render(); toast(embedded ? 'Review removed from your page. Click Publish when you\'re happy.' : 'Review removed. Click Publish when you\'re ready.'); } catch (err) { showError(err); }
+    }));
+    if (embedded) return; // the on-page editor handles "Reload latest", Undo all and Publish itself
+    root.querySelector('[data-discard]')?.addEventListener('click', async () => {
+      if (!(await confirmBox({ title: 'Undo unpublished changes?', body: 'The reviews go back to exactly what is on the website now.', yes: 'Undo changes', danger: true }))) return;
+      try { changed(await api('POST', '/reviews/discard', { baseRevision: R.revision })); banner = '<div class="note note--ok"><p>Changes undone.</p></div>'; render(); } catch (err) { showError(err); }
+    });
+    root.querySelector('#msg').addEventListener('click', async (e) => { if (e.target.matches('[data-reload]')) { try { changed(await api('GET', '/reviews')); banner = ''; render(); } catch (err) { showError(err); } } });
+    bindReviewsPublish(() => R, (x) => { R = x; }, () => { banner = ''; render(); }, showError);
+  }
+  render();
+}
+
+// One review's form. Full screen, or in the on-page editor's side panel (embedded: opts.back() returns to the
+// list, opts.onChange(R) after saving).
+async function reviewEditScreen(slug, root = app, opts = {}) {
+  const embedded = !!opts.embedded;
+  if (embedded) root.innerHTML = '<p class="loading">Loading…</p>'; else setScreen('<p class="loading">Loading…</p>');
+  let R = opts.R || await api('GET', '/reviews');
+  const t = slug ? R.draft.items.find((x) => x.slug === slug) : null;
+  if (slug && !t) { const m = '<div class="note note--bad"><p>That review is no longer there.</p></div>'; if (embedded) root.innerHTML = m; else setScreen('<a class="back" href="#/reviews">← Back to reviews</a>' + m); return; }
+  const today = new Date().toISOString().slice(0, 10);
+  const v = { title: t?.title || '', client: t?.client || '', role: t?.role || '', date: t?.date || today, text: (t?.text || []).join('\n\n') };
+  let dirty = false;
+  unsavedGuard = () => dirty && root.isConnected;
+  root.innerHTML = `
+    ${embedded ? '<p><a class="back" href="#" data-back>← All reviews</a></p>' : `<a class="back" href="#/reviews">← Back to reviews</a>
+    <h1>${t ? 'Change review' : 'Add a review'}</h1>`}
+    ${embedded ? '' : how([t ? 'Change what you need below.' : 'Fill in the boxes below. Only the review, a short title and the date are needed.', 'Click <strong>Save</strong>. Then click <strong>Publish</strong> on the reviews page to put it on your website.'])}
+    <div id="msg"></div>
+    <form id="rform" class="rform" novalidate>
+      <div class="field"><label for="r-text">The review</label><textarea id="r-text" rows="9" maxlength="6000">${esc(v.text)}</textarea><p class="hint">Paste the client's words. Leave an empty line between paragraphs.</p></div>
+      <div class="field"><label for="r-title">Short title</label><input id="r-title" maxlength="120" value="${esc(v.title)}" placeholder="For example: Made selling easy"><p class="hint">Shown in bold above the review.</p></div>
+      <div class="field"><label for="r-client">Client's name <span class="opt">(optional)</span></label><input id="r-client" maxlength="80" value="${esc(v.client)}" placeholder="For example: Sarah M."><p class="hint">Only include a name if the client is OK with it.</p></div>
+      <div class="field"><label for="r-role">Buyer or seller? <span class="opt">(optional)</span></label><select id="r-role">${ROLES.map((r) => `<option value="${esc(r)}"${r === v.role ? ' selected' : ''}>${r || '— Don\'t show —'}</option>`).join('')}</select></div>
+      <div class="field"><label for="r-date">Date of the review</label><input id="r-date" type="date" max="${today}" value="${esc(v.date)}"></div>
+      <p class="rform__btns"><button type="submit" class="btn btn--primary">${embedded ? 'Save – show it on my page' : 'Save'}</button> <a class="btn" href="#/reviews" data-cancel>Cancel</a></p>
+    </form>`;
+  root.querySelectorAll('#rform input, #rform textarea, #rform select').forEach((el) => el.addEventListener('input', () => { dirty = true; }));
+  const leave = async () => { if (dirty && !(await confirmBox({ title: 'Leave without saving?', body: 'Your typing in this review will be lost.', yes: 'Leave without saving', no: 'Keep typing', danger: true }))) return; dirty = false; unsavedGuard = null; opts.back(); };
+  if (embedded) {
+    root.querySelector('[data-back]').addEventListener('click', (e) => { e.preventDefault(); leave(); });
+    root.querySelector('[data-cancel]').addEventListener('click', (e) => { e.preventDefault(); leave(); });
+    root.querySelector('#r-text').focus({ preventScroll: true });
+  }
+  const say = (html) => { if (!root.isConnected) return; const m = root.querySelector('#msg'); m.innerHTML = html; m.scrollIntoView({ block: 'nearest' }); };
+  root.querySelector('#rform').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fields = { text: root.querySelector('#r-text').value, title: root.querySelector('#r-title').value, client: root.querySelector('#r-client').value, role: root.querySelector('#r-role').value, date: root.querySelector('#r-date').value };
+    const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      R = t ? await api('PUT', `/reviews/item/${encodeURIComponent(t.slug)}`, { fields, baseRevision: R.revision }) : await api('POST', '/reviews', { fields, baseRevision: R.revision });
+      dirty = false; unsavedGuard = null;
+      if (embedded) { opts.onChange?.(R); opts.back(); toast('Saved – your page shows it now. Click Publish when you\'re happy.'); return; }
+      location.hash = '#/reviews';
+      setTimeout(() => toast('Saved. Click Publish at the bottom when you\'re ready.'), 300);
+    } catch (err) {
+      btn.disabled = false; btn.textContent = embedded ? 'Save – show it on my page' : 'Save';
+      if (err.status !== 409) return say(errorNote(err));
+      // Someone else saved reviews meanwhile. Never overwrite their words silently: show what changed, keep the typing.
+      let fresh = null;
+      try { fresh = await api('GET', '/reviews'); } catch { return say(errorNote(err)); }
+      R = fresh; if (embedded) opts.onChange?.(R);
+      const theirs = t ? R.draft.items.find((x) => x.slug === t.slug) : null;
+      if (t && !theirs) return say('<div class="note note--bad" role="alert"><p>This review was removed on another computer, so your changes can\'t be saved to it. Click <strong>Cancel</strong>, or copy your text and add it as a new review.</p></div>');
+      if (t && JSON.stringify(theirs) !== JSON.stringify(t)) {
+        return say(`<div class="note note--warn" role="alert"><p>This review was just changed on another computer. Their version:</p><blockquote class="review__text">${esc(theirs.title)} – ${esc((theirs.text || []).join(' ').slice(0, 300))}</blockquote><p>Your typing is still in the boxes. Click <strong>Save</strong> to replace their version with yours, or <strong>Cancel</strong> to keep theirs.</p></div>`);
+      }
+      say('<div class="note note--warn" role="alert"><p>Other reviews were just changed on another computer. Your typing is still here – click <strong>Save</strong> again.</p></div>');
+    }
+  });
+}
+
+route();

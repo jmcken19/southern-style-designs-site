@@ -1,0 +1,25 @@
+{
+  "hook": {
+    "enabled": true,
+    "limits": {
+      "maxFindings": 5,
+      "maxChars": 8000
+    }
+  },
+  "buildPath": "code",
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "**/assets/css/parts.css"
+        ],
+        "createdAt": "2026-11-09T20:56:33.958Z",
+        "reason": "Claude: the only match is .tquote, a blockquote quotation rule on full review pages, not a card accent"
+      }
+    ]
+  }
+}

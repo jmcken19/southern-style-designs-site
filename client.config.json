@@ -1,0 +1,47 @@
+{
+  "_comment": "Per-client setup. Fill in with `npm run new-client` (scripts/new-client.mjs), then adjust by hand. See docs/PLAYBOOK.md.",
+  "client": {
+    "slug": "example-business",
+    "name": "Example Business"
+  },
+  "domain": {
+    "main": "www.example.com",
+    "apex": "example.com"
+  },
+  "github": {
+    "repo": "OWNER/example-business-site",
+    "pagesPath": "/example-business-site"
+  },
+  "cloudflare": {
+    "accountId": "",
+    "siteWorker": "example-business-site",
+    "editorWorker": "example-business-editor",
+    "d1Name": "example-business-editor",
+    "d1Id": "",
+    "kvId": "",
+    "accessTeamDomain": "",
+    "accessAud": ""
+  },
+  "owner": {
+    "name": "Owner Name",
+    "supportName": "James McKenna"
+  },
+  "features": {
+    "slideshow": true,
+    "reviews": true,
+    "contactForm": true
+  },
+  "reviewsPath": "/reviews/",
+  "themeColor": "#1f2a44",
+  "photoSpots": {
+    "headshot": {
+      "label": "Your photo",
+      "where": "About page",
+      "page": "/about/",
+      "minEdge": 500,
+      "tip": "A portrait (taller than wide) photo looks best.",
+      "newAlt": "Owner Name",
+      "defaults": { "small": "/assets/img/placeholder-portrait.jpg", "large": "/assets/img/placeholder-portrait.jpg", "alt": "Owner Name" }
+    }
+  }
+}

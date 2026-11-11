@@ -1,0 +1,4 @@
+# Impeccable launcher: cmd.exe needs CRLF batch files; the sh launcher needs LF.
+*.cmd text eol=crlf
+.claude/skills/impeccable/scripts/impeccable text eol=lf
+.claude/skills/impeccable/** linguist-vendored

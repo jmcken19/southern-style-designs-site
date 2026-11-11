@@ -1,0 +1,17 @@
+{
+  "repo": "https://github.com/bergside/awesome-design-skills.git",
+  "pin": "f631a09b4fcc0166f2e2c1a8c81906ef680c57e8",
+  "left_out": [
+    "claude",
+    "codex",
+    "cursor",
+    "roku",
+    "sega",
+    "pacman",
+    "tetris",
+    "lingo",
+    "stitch",
+    "impeccable"
+  ],
+  "installed": "2026-11-11"
+}
