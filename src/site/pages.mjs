@@ -75,10 +75,10 @@ function portfolio(ctx) {
 </section>`;
 }
 
-function reviewSlot(ctx, r) {
+function reviewSlot(ctx, r, level = 3) {
   const own = ownedBy(ctx, 'reviews');
   return `<li class="review" data-review="${e(r.slug)}"${editMark(ctx, 'review', r.slug, r.title)}>
-    <h3 class="review__title"${own}>${e(r.title)}</h3>
+    <h${level} class="review__title"${own}>${e(r.title)}</h${level}>
     <blockquote${own}>${r.text.map((p) => `<p>${e(p)}</p>`).join('')}</blockquote>
     ${r.client ? `<p class="review__by"${own}>${e(r.client)}</p>` : ''}
   </li>`;
@@ -91,7 +91,7 @@ function reviews(ctx, { id = 'reviews', level = 2, titleKey = 'reviews.title', m
   <div class="wrap">
     <h${level} id="${id}-h" class="section-title">${t(ctx, titleKey)}</h${level}>
     <p class="badge"><span class="badge__stars" aria-hidden="true">★★★★★</span> <span>${t(ctx, 'reviews.badge')}</span> <span class="badge__verify">${t(ctx, 'reviews.verify')}</span></p>
-    <ul class="reviews__list">${list.map((r) => reviewSlot(ctx, r)).join('')}</ul>
+    <ul class="reviews__list">${list.map((r) => reviewSlot(ctx, r, level + 1)).join('')}</ul>
     ${max ? `<p class="center reviews__all"><a class="btn" href="${ctx.url(ctx.config.reviewsPath || '/reviews/')}">${t(ctx, 'reviews.all')}</a></p>` : ''}
   </div>
 </section>`;

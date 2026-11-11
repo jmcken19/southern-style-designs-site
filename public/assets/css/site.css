@@ -9,7 +9,7 @@
 @font-face { font-family: "Cormorant Garamond"; font-weight: 500; font-style: italic; font-display: swap; src: url(../fonts/cormorant-garamond-latin-500-italic.woff2) format("woff2"); }
 
 :root {
-  /* Palette (contrast on --cream: --ink 13.3:1, --ink-soft 7.2:1, white on --accent 6.3:1) */
+  /* Palette (contrast: --ink on --cream 12.8:1, --ink-soft on --cream 6.9:1, white on --accent 6.2:1, --accent links on --cream 5.5:1) */
   --cream: #f7f2e8;
   --paper: #fffdf8;
   --accent: #56664b;      /* sage */
