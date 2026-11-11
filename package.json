@@ -1,7 +1,7 @@
 {
-  "name": "client-site-template",
+  "name": "southern-style-designs-site",
   "version": "1.0.0",
-  "description": "Rebuild a small business's website + a simple owner editor (photos, reviews) on Cloudflare. See docs/PLAYBOOK.md.",
+  "description": "Southern Style Designs website + owner editor (made from client-site-template)",
   "private": true,
   "type": "module",
   "scripts": {
