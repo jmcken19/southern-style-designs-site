@@ -294,3 +294,13 @@ body.is-visual #toast { display: none; }
 .jte-tbar__note { color: #4a4a55; font-size: .98rem !important; }
 .jte-tbar [data-save] { background: #1d5fc4; border-color: #1d5fc4; color: #fff; } /* Save is blue – only Publish uses the brand colour */
 .jte-tbar [data-save]:hover { background: #174ea0; }
+
+/* Portfolio panel (client addition) */
+.work-add { padding: 1rem; margin: 0 0 1.25rem; border: 2px solid var(--line); border-radius: 10px; background: #fff; }
+.work-add h2 { margin-top: 0; }
+.work-ed { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; }
+.work-ed__item { border: 2px solid var(--line); border-radius: 10px; background: #fff; padding: .75rem; }
+.work-ed__item.is-dragging { opacity: .6; }
+.work-ed__top { display: flex; align-items: center; gap: .6rem; margin-bottom: .5rem; }
+.work-ed__item > img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; margin-bottom: .75rem; background: var(--wash); }
+.work-ed .field input, .work-ed .field select { font-size: 18px; min-height: 52px; }

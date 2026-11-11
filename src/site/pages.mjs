@@ -13,7 +13,7 @@ const SERVICE_KEYS = ['1', '2', '3', '4'];
 
 function hero(ctx) {
   const { site } = ctx;
-  const inner = `<h1>${t(ctx, 'site.name')}</h1>
+  const inner = `<h1>${t(ctx, 'hero.title')}</h1>
     ${site.tagline ? `<p class="hero__tagline">${t(ctx, 'site.tagline')}</p>` : ''}
     <p class="hero__actions">
       ${site.phone ? `<a class="btn btn--light" href="${e(phoneHref(site))}">${t(ctx, 'hero.call')} ${t(ctx, 'site.phone')}</a>` : ''}
@@ -84,13 +84,15 @@ function reviewSlot(ctx, r) {
   </li>`;
 }
 
-function reviews(ctx, { id = 'reviews', level = 2, titleKey = 'reviews.title' } = {}) {
-  const list = ctx.reviews || []; // the order of content/reviews.json (the owner arranges it in the editor)
+function reviews(ctx, { id = 'reviews', level = 2, titleKey = 'reviews.title', max = 0 } = {}) {
+  const all = ctx.reviews || []; // the order of content/reviews.json (the owner arranges it in the editor)
+  const list = max ? all.slice(0, max) : all;
   return `<section id="${id}" class="section reviews" aria-labelledby="${id}-h"${editMark(ctx, 'reviews', 'list', 'Reviews')}>
   <div class="wrap">
     <h${level} id="${id}-h" class="section-title">${t(ctx, titleKey)}</h${level}>
     <p class="badge"><span class="badge__stars" aria-hidden="true">★★★★★</span> <span>${t(ctx, 'reviews.badge')}</span> <span class="badge__verify">${t(ctx, 'reviews.verify')}</span></p>
     <ul class="reviews__list">${list.map((r) => reviewSlot(ctx, r)).join('')}</ul>
+    ${max ? `<p class="center reviews__all"><a class="btn" href="${ctx.url(ctx.config.reviewsPath || '/reviews/')}">${t(ctx, 'reviews.all')}</a></p>` : ''}
   </div>
 </section>`;
 }
@@ -130,7 +132,7 @@ export function homePage(ctx) {
 ${about(ctx)}
 ${services(ctx)}
 ${portfolio(ctx)}
-${ctx.config.features?.reviews !== false ? reviews(ctx) : ''}
+${ctx.config.features?.reviews !== false ? reviews(ctx, { max: 3 }) : ''}
 ${contact(ctx)}`;
 }
 

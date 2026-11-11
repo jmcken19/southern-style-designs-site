@@ -6,6 +6,7 @@ import { github } from './github.mjs';
 import { validateVariant, validateOriginal } from './images.mjs';
 import { validateSlideshow as validateHomepage, HERO_SIZES, MAX_HERO_SLIDES, randomId } from '../../src/lib/core.mjs';
 import { sitePhoto, validatePhotos } from '../../src/lib/photos.mjs';
+import { validatePortfolio, portfolioCategories, MAX_PORTFOLIO } from '../../src/lib/portfolio.mjs';
 import { renderPath, notFoundHtml, routes as siteRoutes } from '../../src/site/routes.mjs';
 import { previewHeaders, markPreview, parseReviewsDraft } from './preview.mjs';
 import { withDraftWords } from './text.mjs';
@@ -27,14 +28,22 @@ export function photosRoutes(H) {
     fade: site.heroFade === true,
     autoplay: site.heroAutoplay !== false,
     photos: spotsFrom(site),
+    portfolio: workFrom(site),
   });
+  // Portfolio (client addition): [{ id, src, category, title, alt }] – see src/lib/portfolio.mjs.
+  const CATS = portfolioCategories(config);
+  const PORTFOLIO_ON = CATS.length > 0;
+  function workFrom(site) { return (site.portfolio || []).map((w) => ({ id: w.id, src: w.src, category: w.category, title: w.title || '', alt: w.alt || '' })); }
+  const catOk = (c) => CATS.some((x) => x.key === c);
+  const catLabel = (c) => CATS.find((x) => x.key === c)?.label || '';
+  const clean = (v, max = 200) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
   function spotsFrom(site) {
     const out = {};
     for (const k of Object.keys(PHOTO_SPOTS)) { const p = sitePhoto(site, PHOTO_SPOTS, k); out[k] = { ...(p.id ? { id: p.id } : {}), small: p.small, large: p.large, alt: p.alt }; }
     return out;
   }
   // Rows saved before photo spots existed: fill them in from the website's settings.
-  const withSpots = (st) => (st && !st.photos ? { ...st, photos: spotsFrom(siteContent) } : st);
+  const withSpots = (st) => { if (st && !st.photos) st = { ...st, photos: spotsFrom(siteContent) }; if (st && !st.portfolio) st = { ...st, portfolio: workFrom(siteContent) }; return st; };
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   function view(row) {
@@ -95,7 +104,7 @@ export function photosRoutes(H) {
     }
     const original = await get('original');
     const orig = original && !validateOriginal(original).error ? original : null;
-    return { variants, original: orig, baseRevision: Number(form.get('baseRevision')), alt: String(form.get('alt') || '').slice(0, 200) };
+    return { variants, original: orig, baseRevision: Number(form.get('baseRevision')), alt: String(form.get('alt') || '').slice(0, 200), category: String(form.get('category') || ''), title: clean(form.get('title')) };
   }
 
   async function store(A, id, p) {
@@ -196,6 +205,80 @@ export function photosRoutes(H) {
       return new Response(bytes, { headers: { 'Content-Type': /\.png$/i.test(p.small) ? 'image/png' : 'image/jpeg', 'Cache-Control': 'private, max-age=300' } });
     },
 
+    /* ---- portfolio ---- */
+    async workAdd(A) {
+      if (!PORTFOLIO_ON) throw new HttpError(404, 'Not found.');
+      await rateLimit(A, 'upload');
+      const p = await readForm(A);
+      if (!catOk(p.category)) throw new HttpError(422, 'Please choose a room type for the new photo.');
+      let row = await load(A);
+      if (row.draft.portfolio.length >= MAX_PORTFOLIO) throw new HttpError(422, `The portfolio can have up to ${MAX_PORTFOLIO} photos. Remove one first.`);
+      const id = randomId('s-', 10);
+      await store(A, id, p);
+      for (let attempt = 0; attempt < 6; attempt++) {
+        try {
+          row = await readRow(A);
+          const title = p.title || '[Project name]';
+          const item = { id, src: `/assets/img/hero/${id}`, category: p.category, title, alt: p.alt || `${catLabel(p.category)} project: ${title}` };
+          const updated = await write(A, row, { draft: { ...row.draft, portfolio: [item, ...row.draft.portfolio] } }, row.revision);
+          await logEvent(A, 'upload-portfolio', null, { id });
+          return view(updated);
+        } catch (e) { if (!(e instanceof HttpError && e.status === 409)) throw e; }
+      }
+      throw new HttpError(409, 'Too many changes at once. Please try again.');
+    },
+
+    async workReplace(A, id) {
+      if (!PORTFOLIO_ON) throw new HttpError(404, 'Not found.');
+      await rateLimit(A, 'upload');
+      const p = await readForm(A);
+      const row = await load(A);
+      const i = row.draft.portfolio.findIndex((w) => w.id === id);
+      if (i < 0) throw new HttpError(404, 'That photo is no longer in the portfolio. Please refresh.');
+      const newId = randomId('s-', 10);
+      await store(A, newId, p);
+      const portfolio = row.draft.portfolio.slice();
+      portfolio[i] = { ...portfolio[i], id: newId, src: `/assets/img/hero/${newId}` };
+      const updated = await write(A, row, { draft: { ...row.draft, portfolio } }, p.baseRevision);
+      await logEvent(A, 'upload-portfolio-replace', null, { from: id, to: newId });
+      return view(updated);
+    },
+
+    /** Order + each photo's name, room type and description: { order: [ids], items: { id: { title, category, alt } } }. */
+    async workArrange(A) {
+      if (!PORTFOLIO_ON) throw new HttpError(404, 'Not found.');
+      const body = await readJsonBody(A.request);
+      const rev = needRevision(body);
+      const row = await load(A);
+      const byId = new Map(row.draft.portfolio.map((w) => [w.id, w]));
+      const order = Array.isArray(body.order) ? body.order : row.draft.portfolio.map((w) => w.id);
+      if (order.length !== byId.size || new Set(order).size !== order.length || !order.every((x) => byId.has(x))) throw new HttpError(409, 'The portfolio changed since you opened this page. Please click "Reload latest".', { conflict: true });
+      const items = body.items && typeof body.items === 'object' ? body.items : {};
+      const portfolio = order.map((id) => {
+        const w = byId.get(id); const c = items[id] || {};
+        const next = { ...w };
+        if (c.title !== undefined) { next.title = clean(c.title); if (!next.title) throw new HttpError(422, 'Please give the photo a name (for example the room or the project).'); }
+        if (c.category !== undefined) { if (!catOk(c.category)) throw new HttpError(422, 'Please choose a room type.'); next.category = c.category; }
+        if (c.alt !== undefined) next.alt = clean(c.alt);
+        return next;
+      });
+      const updated = await write(A, row, { draft: { ...row.draft, portfolio } }, rev);
+      await logEvent(A, 'save-portfolio');
+      return json(view(updated));
+    },
+
+    async workRemove(A, id) {
+      if (!PORTFOLIO_ON) throw new HttpError(404, 'Not found.');
+      const rev = Number(A.url.searchParams.get('baseRevision'));
+      if (!Number.isInteger(rev)) throw new HttpError(400, 'Please refresh the page and try again.');
+      const row = await load(A);
+      const portfolio = row.draft.portfolio.filter((w) => w.id !== id);
+      if (portfolio.length === row.draft.portfolio.length) throw new HttpError(404, 'That photo was already removed.');
+      const updated = await write(A, row, { draft: { ...row.draft, portfolio } }, rev);
+      await logEvent(A, 'save-portfolio-remove', null, { id });
+      return json(view(updated));
+    },
+
     async arrange(A) {
       const body = await readJsonBody(A.request);
       const rev = needRevision(body);
@@ -246,7 +329,7 @@ export function photosRoutes(H) {
       if (!bytes) {
         // Photos that were already on the website before the editor existed: copy from the repo once.
         const row = await readRow(A);
-        const slide = [...(row?.draft.slides || []), ...(row?.live?.slides || [])].find((s) => s.id === id);
+        const slide = [...(row?.draft.slides || []), ...(row?.live?.slides || []), ...(row?.draft.portfolio || []), ...(row?.live?.portfolio || [])].find((s) => s.id === id);
         const spotted = !slide && [...Object.values(row?.draft.photos || {}), ...Object.values(row?.live?.photos || {})].some((p) => p.id === id);
         if (!slide && !spotted) throw new HttpError(404, 'Photo not found.');
         const f = await github(A.env).getFile(slide ? `public${slide.src}-${w}.jpg` : `${HERO_DIR}/${id}-${w}.jpg`);
@@ -260,9 +343,9 @@ export function photosRoutes(H) {
     async preview(A) {
       const row = await load(A);
       const base = publicBase(A.env);
-      const srcToId = new Map(row.draft.slides.map((s) => [s.src, s.id]));
+      const srcToId = new Map([...row.draft.slides, ...(row.draft.portfolio || [])].map((s) => [s.src, s.id]));
       const draftSpotIds = new Set(Object.values(row.draft.photos).map((p) => p.id).filter(Boolean));
-      const site = { ...siteContent, ...(row.draft.slides.length ? { heroSlides: row.draft.slides } : {}), heroSlideSeconds: row.draft.seconds, heroFade: row.draft.fade, heroAutoplay: row.draft.autoplay !== false, photos: row.draft.photos };
+      const site = { ...siteContent, ...(row.draft.slides.length ? { heroSlides: row.draft.slides } : {}), heroSlideSeconds: row.draft.seconds, heroFade: row.draft.fade, heroAutoplay: row.draft.autoplay !== false, photos: row.draft.photos, ...(PORTFOLIO_ON ? { portfolio: row.draft.portfolio } : {}) };
       // ?page=<photo spot key> previews the page that spot is on; ?path=/about/ previews that page;
       // otherwise the homepage. ?edit=1 adds the editable marks used by the "edit on the page" editor.
       const spot = PHOTO_SPOTS[A.url.searchParams.get('page')];
@@ -321,7 +404,8 @@ export function photosRoutes(H) {
             if (def && (p.id || p.small !== def.small || p.large !== def.large)) photos[k] = p;
           }
           if (Object.keys(photos).length) site.photos = photos; else delete site.photos;
-          const problems = [...validateHomepage(site), ...validatePhotos(site, PHOTO_SPOTS)];
+          if (PORTFOLIO_ON) site.portfolio = (d.portfolio || []).map(({ id, src, category, title, alt }) => ({ id, src, category, title, alt }));
+          const problems = [...validateHomepage(site), ...validatePhotos(site, PHOTO_SPOTS), ...validatePortfolio(site, config)];
           if (problems.length) throw new HttpError(422, 'Something about the photos is not ready: ' + problems[0]);
           const changes = [{ path: 'content/site.json', content: JSON.stringify(site, null, 2) + '\n' }];
           const existing = new Set((await gh.listDir(HERO_DIR)).map((f) => f.name));
@@ -334,6 +418,17 @@ export function photosRoutes(H) {
               if (existing.has(name)) continue;
               const bytes = await A.env.PHOTOS.get(`hero:${s.id}:${w}`, 'arrayBuffer');
               if (!bytes) throw new HttpError(500, 'A photo is missing from storage. Please remove it and add it again.');
+              changes.push({ path: `${HERO_DIR}/${name}`, content: new Uint8Array(bytes) });
+            }
+          }
+          for (const s of PORTFOLIO_ON ? d.portfolio || [] : []) {
+            if (!s.src.startsWith('/assets/img/hero/')) continue; // placeholder photos that came with the site stay where they are
+            for (const w of HERO_SIZES) {
+              const name = `${s.id}-${w}.jpg`;
+              wanted.add(name);
+              if (existing.has(name)) continue;
+              const bytes = await A.env.PHOTOS.get(`hero:${s.id}:${w}`, 'arrayBuffer');
+              if (!bytes) throw new HttpError(500, 'A portfolio photo is missing from storage. Please remove it and add it again.');
               changes.push({ path: `${HERO_DIR}/${name}`, content: new Uint8Array(bytes) });
             }
           }
@@ -368,6 +463,10 @@ export function photosRoutes(H) {
     if (parts[1] === 'photos' && parts.length === 2 && method === 'PUT') return routes.arrange(A);
     if (parts[1] === 'photos' && parts.length === 3 && method === 'DELETE') return routes.remove(A, parts[2]);
     if (parts[1] === 'photos' && parts[3] === 'replace' && method === 'POST') return idempotent(A, () => routes.replace(A, parts[2]));
+    if (parts[1] === 'work' && parts.length === 2 && method === 'POST') return idempotent(A, () => routes.workAdd(A));
+    if (parts[1] === 'work' && parts.length === 2 && method === 'PUT') return routes.workArrange(A);
+    if (parts[1] === 'work' && parts.length === 3 && method === 'DELETE') return routes.workRemove(A, parts[2]);
+    if (parts[1] === 'work' && parts[3] === 'replace' && method === 'POST') return idempotent(A, () => routes.workReplace(A, parts[2]));
     if (parts[1] === 'spot' && parts.length === 3 && method === 'POST') return idempotent(A, () => routes.spot(A, parts[2]));
     if (parts[1] === 'spot' && parts[3] === 'img' && method === 'GET') return routes.spotImage(A, parts[2]);
     if (parts[1] === 'spot' && parts[3] === 'undo' && method === 'POST') return routes.spotUndo(A, parts[2]);

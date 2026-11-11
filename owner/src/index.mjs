@@ -85,6 +85,7 @@ async function handleApi(request, env, url, ctx) {
       email: user.email, role: user.role, support: supportInfo(env), site: { url: publicBase(env), name: config.client?.name || '' },
       features: { slideshow: config.features?.slideshow !== false, reviews: config.features?.reviews !== false },
       pages: editorPages(env),
+      portfolio: { categories: (config.portfolioCategories || []).map((c) => ({ key: c.key, label: c.label })) },
       spots: Object.fromEntries(Object.entries(config.photoSpots || {}).map(([k, s]) => [k, { label: s.label, where: s.where, page: s.page, tip: s.tip || '', min: s.minEdge || 800 }])),
     });
   }

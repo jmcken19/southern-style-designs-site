@@ -432,6 +432,7 @@ const KIND_TOOLS = {
   photo: { title: (key) => spotInfo()[key]?.label || 'Photo', button: '✎ Change photo', open: (body, ctx) => spotPanel(body, ctx) },
   reviews: { title: 'Reviews', button: '✎ Change reviews', barButton: '✎ Change reviews – add, change or remove', place: 'bar', open: (body, ctx) => reviewsPanel(body, ctx, null) },
   review: { title: 'Change this review', button: '✎ Change review', place: 'bottom', open: (body, ctx) => reviewsPanel(body, ctx, ctx.key) },
+  portfolio: { title: 'Portfolio photos', button: '✎ Change portfolio', barButton: '✎ Change portfolio – add, name, sort or remove photos', place: 'bar', open: (body, ctx) => portfolioPanel(body, ctx) },
   // Words (t()/tBlock()/tList() in src/lib/text.mjs): changed right on the page, no side panel – see "Words" in visualScreen.
   text: { inline: true, title: 'Words', button: '✎' },
 };
@@ -1238,6 +1239,121 @@ function spotPanel(root, ctx) {
       if (root.isConnected) say(errorNote(err)); else toast(`Your photo (${info.label || 'photo'}) was not saved: ${err.message}`, 10000);
     }
   });
+  render();
+}
+
+/* ---------------- portfolio (client addition: src/lib/portfolio.mjs) ---------------- */
+// Side panel for the filterable gallery: add photos (with a room type), name each one, change its room type,
+// describe it, replace it, remove it, change the order. Part of the "homepage" draft source (same Publish).
+const workCats = () => me.portfolio?.categories || [];
+function portfolioPanel(root, ctx) {
+  const H = () => ctx.get('homepage');
+  let msg = '', newCat = workCats()[0]?.key || '';
+  const typing = new Set();
+  unsavedGuard = () => typing.size > 0 && root.isConnected;
+  const catOptions = (sel) => workCats().map((c) => `<option value="${esc(c.key)}"${c.key === sel ? ' selected' : ''}>${esc(c.label)}</option>`).join('');
+  const order = () => H().draft.portfolio.map((w) => w.id);
+
+  function render() {
+    if (!root.isConnected) return;
+    const list = H().draft.portfolio;
+    const focusId = document.activeElement?.id;
+    root.innerHTML = `
+      <div id="wmsg" aria-live="polite">${msg}</div>
+      <section class="work-add">
+        <h2>Add photos</h2>
+        <div class="field"><label for="wnewcat">Room type for the new photos</label><select id="wnewcat">${catOptions(newCat)}</select></div>
+        ${dropZoneHtml('addwork', '+ Add photos', 'Click to choose photos — or drag them here from a folder')}
+        <ul class="upload-list" id="wuploads" aria-live="polite"></ul>
+        <p class="hint">New photos go to the top of the portfolio. Give each one a name below.</p>
+      </section>
+      <h2>Your portfolio (${list.length} photo${list.length === 1 ? '' : 's'})</h2>
+      ${list.length > 1 ? '<p class="hint">Change the order with <strong>⠿ Drag</strong>, or the Move up / Move down buttons. The first photo shows first.</p>' : ''}
+      ${list.length ? '' : '<p class="hint">No photos yet. Add some with the box above.</p>'}
+      <ul class="work-ed" id="wlist">${list.map((w, i) => `<li class="work-ed__item" data-id="${esc(w.id)}">
+        <div class="work-ed__top">${list.length > 1 ? handleHtml(i + 1) : ''}<span class="photo__label">Photo ${i + 1}</span></div>
+        <img src="/api/homepage/photo/${esc(w.id)}?w=800" alt="Portfolio photo ${i + 1}: ${esc(w.title)}" loading="lazy">
+        <div class="field"><label for="wt-${esc(w.id)}">Name</label><input type="text" id="wt-${esc(w.id)}" data-f="title" data-id="${esc(w.id)}" value="${esc(w.title)}" maxlength="200"></div>
+        <div class="field"><label for="wc-${esc(w.id)}">Room type</label><select id="wc-${esc(w.id)}" data-f="category" data-id="${esc(w.id)}">${catOptions(w.category)}</select></div>
+        <div class="field"><label for="wa-${esc(w.id)}">Describe the photo <span class="hint">(read aloud to visitors who can't see it)</span></label><input type="text" id="wa-${esc(w.id)}" data-f="alt" data-id="${esc(w.id)}" value="${esc(w.alt)}" maxlength="200"></div>
+        <div class="photo__bar">
+          ${i > 0 ? `<button type="button" class="btn btn--small" data-move="-1" data-id="${esc(w.id)}">Move up</button>` : ''}
+          ${i < list.length - 1 ? `<button type="button" class="btn btn--small" data-move="1" data-id="${esc(w.id)}">Move down</button>` : ''}
+          <span class="btn btn--small file-btn">Replace photo<input type="file" accept="image/*,.heic,.heif" data-wreplace="${esc(w.id)}" aria-label="Replace portfolio photo ${i + 1}"></span>
+          <button type="button" class="btn btn--small btn--danger" data-wremove="${esc(w.id)}" aria-label="Remove portfolio photo ${i + 1}">Remove</button>
+        </div>
+      </li>`).join('')}</ul>`;
+    if (focusId) root.querySelector(`#${CSS.escape(focusId)}`)?.focus({ preventScroll: true });
+    bind();
+  }
+  const say = (html) => { msg = html; const m = root.querySelector('#wmsg'); if (m) { m.innerHTML = html; } };
+
+  async function save(method, path, body) {
+    try {
+      const st = await api(method, path, body ? { ...body, baseRevision: H().revision } : undefined);
+      ctx.update('homepage', st); msg = ''; render(); return true;
+    } catch (err) {
+      if (err.status === 409) { try { ctx.update('homepage', await api('GET', '/homepage')); } catch { /* ignore */ } }
+      render(); say(errorNote(err)); return false;
+    }
+  }
+  const arrange = (ord, items) => save('PUT', '/homepage/work', { order: ord, ...(items ? { items } : {}) });
+
+  const upload = (files, replaceId = null) => busyWhile(async () => {
+    if (!files.length || !root.isConnected) return;
+    const list = root.querySelector('#wuploads'); list.innerHTML = '';
+    const rows = files.map((f, i) => { const li = document.createElement('li'); li.textContent = `Photo ${i + 1} of ${files.length}: waiting…`; list.appendChild(li); return li; });
+    let failed = 0;
+    for (let i = 0; i < files.length; i++) {
+      try {
+        rows[i].textContent = `Photo ${i + 1} of ${files.length}: preparing…`;
+        const p = await prepareHero(files[i], 1000);
+        rows[i].textContent = `Photo ${i + 1} of ${files.length}: uploading…`;
+        const fd = new FormData();
+        for (const w of [2000, 1400, 800]) fd.append(`w${w}`, p[w].blob, `w${w}.jpg`);
+        if (files[i].size <= 24 * 1024 * 1024) fd.append('original', files[i], 'original');
+        fd.append('baseRevision', String(H().revision));
+        if (!replaceId) fd.append('category', newCat);
+        ctx.update('homepage', await api('POST', replaceId ? `/homepage/work/${replaceId}/replace` : '/homepage/work', fd, { idem: uuid() }));
+        rows[i].textContent = `Photo ${i + 1} of ${files.length}: ✓ added`;
+      } catch (err) {
+        failed++;
+        rows[i].innerHTML = `<strong>Photo ${i + 1} (${esc(files[i].name || 'photo')}) was not added:</strong> ${esc(err.message)}`;
+        if (err.status === 409) { try { ctx.update('homepage', await api('GET', '/homepage')); } catch { /* ignore */ } }
+      }
+    }
+    if (!root.isConnected) { toast(failed ? 'Some portfolio photos were not added. Open the portfolio to see why.' : '✓ Portfolio photos added.', 8000); return; }
+    const summary = list.innerHTML;
+    msg = failed ? `<div class="note note--warn"><p>${files.length - failed} of ${files.length} photos added. The others are listed below.</p></div>`
+      : `<div class="note note--ok"><p>✓ ${replaceId ? 'Photo replaced' : 'Added to the top of your portfolio'}. It shows on your page now. ${replaceId ? '' : 'Give it a name below, then '}click <strong>Publish</strong> when you're happy.</p></div>`;
+    render();
+    if (failed) root.querySelector('#wuploads').innerHTML = summary;
+  });
+
+  function bind() {
+    root.querySelector('#wnewcat').addEventListener('change', (e) => { newCat = e.target.value; });
+    root.querySelector('#addwork').addEventListener('change', (e) => { const f = [...e.target.files]; e.target.value = ''; upload(f); });
+    makeDropZone(root.querySelector('#addwork').closest('.dropzone'), (f) => upload(f));
+    makeSortable(root.querySelector('#wlist'), (ord) => arrange(ord).then((ok) => ok && toast('Order saved. Click Publish when you\'re happy.')));
+    root.querySelectorAll('[data-f]').forEach((el) => {
+      const { id, f } = el.dataset;
+      if (el.tagName === 'INPUT') el.addEventListener('input', () => typing.add(`${id}|${f}`));
+      el.addEventListener('change', async () => {
+        typing.delete(`${id}|${f}`);
+        if (await arrange(order(), { [id]: { [f]: el.value } })) toast('Saved – your page shows it now. Click Publish when you\'re happy.');
+      });
+    });
+    root.querySelectorAll('[data-move]').forEach((b) => b.addEventListener('click', () => {
+      const ord = order(); const i = ord.indexOf(b.dataset.id); const j = i + Number(b.dataset.move);
+      [ord[i], ord[j]] = [ord[j], ord[i]];
+      arrange(ord).then((ok) => { if (ok) root.querySelector(`[data-id="${CSS.escape(b.dataset.id)}"] .drag-handle, [data-id="${CSS.escape(b.dataset.id)}"] input`)?.focus(); });
+    }));
+    root.querySelectorAll('[data-wreplace]').forEach((inp) => inp.addEventListener('change', (e) => { const f = [...e.target.files].slice(0, 1); e.target.value = ''; upload(f, inp.dataset.wreplace); }));
+    root.querySelectorAll('[data-wremove]').forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmBox({ title: 'Remove this photo from the portfolio?', body: 'Visitors keep seeing it until you publish. You can undo before publishing.', yes: 'Remove photo', danger: true }))) return;
+      if (await save('DELETE', `/homepage/work/${b.dataset.wremove}?baseRevision=${H().revision}`)) toast('Photo removed. Click Publish when you\'re happy.');
+    }));
+  }
   render();
 }
 

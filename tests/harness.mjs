@@ -170,6 +170,7 @@ export async function startEditor({ resend = true, port, mirror = null, siteUrl 
       else if (existsSync(join(root, 'public/assets/img/hero-1-800.jpg'))) site.heroSlides = [{ id: 's-hero1', src: '/assets/img/hero-1', alt: 'Placeholder photo', focus: '50% 50%' }];
       site.heroSlideSeconds ??= 7; site.heroFade ??= false; site.heroAutoplay ??= true;
       for (const s of site.heroSlides || []) for (const w of [800, 1400, 2000]) await seedFile(`${s.src}-${w}.jpg`);
+      for (const s of site.portfolio || []) for (const w of [800, 1400, 2000]) await seedFile(`${s.src}-${w}.jpg`); // CLIENT: portfolio photos
     }
     gh.seed('content/site.json', JSON.stringify(site, null, 2));
     for (const spot of Object.values(config.photoSpots || {})) for (const f of new Set([spot.defaults?.small, spot.defaults?.large])) if (f) await seedFile(f);

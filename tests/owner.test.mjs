@@ -409,3 +409,65 @@ test('reviews switched off: no reviews routes, no review edit marks', { skip: C.
   assert.ok(!me.data.pages.some((p) => p.path === C.reviewsPath));
   for (const p of me.data.pages) assert.doesNotMatch((await E.call('GET', `/api/homepage/preview?edit=1&path=${encodeURIComponent(p.path)}`)).data, /data-edit="reviews?"/);
 });
+
+// CLIENT addition: the portfolio gallery (src/lib/portfolio.mjs, owner/src/photos.mjs "work" routes, portfolio panel).
+const PORTFOLIO = JSON.parse(readFileSync(new URL('../client.config.json', import.meta.url), 'utf8')).portfolioCategories?.length > 0;
+test('portfolio: add with a room type, rename, change type, reorder, replace, remove, preview, publish, undo', { skip: !PORTFOLIO && 'no portfolio' }, async () => {
+  let H = await H0();
+  // Start from a clean draft (other tests may have left unpublished changes).
+  if (H.hasUnpublishedChanges) H = (await E.call('POST', '/api/homepage/discard', { body: { baseRevision: H.revision } })).data;
+  const repo = JSON.parse(E.gh.read('content/site.json'));
+  const start = H.draft.portfolio.map((w) => w.id);
+  assert.deepEqual(start, repo.portfolio.map((w) => w.id), 'starts from the website portfolio');
+  assert.deepEqual((await E.call('GET', '/api/me')).data.portfolio.categories.map((c) => c.key), ['living', 'kitchen', 'bedroom', 'outdoor']);
+  // A room type is required; signed-out refused.
+  assert.equal((await E.call('POST', '/api/homepage/work', { form: await heroForm(H.revision) })).status, 422);
+  assert.equal((await E.call('POST', '/api/homepage/work', { as: null, form: await heroForm(H.revision) })).status, 401);
+  const fd = await heroForm(H.revision, { color: '#7a6' }); fd.append('category', 'kitchen');
+  let r = await E.call('POST', '/api/homepage/work', { form: fd });
+  assert.equal(r.status, 200, JSON.stringify(r.data)); H = r.data;
+  const added = H.draft.portfolio[0];
+  assert.equal(added.category, 'kitchen'); assert.match(added.src, /^\/assets\/img\/hero\/s-/); assert.equal(H.draft.portfolio.length, start.length + 1, 'new photos go to the top');
+  // Rename + change room type + description; bad room type / empty name refused; stale refused.
+  const order = [...start, added.id];
+  assert.equal((await E.call('PUT', '/api/homepage/work', { body: { order, items: { [added.id]: { category: 'garage' } }, baseRevision: H.revision } })).status, 422);
+  assert.equal((await E.call('PUT', '/api/homepage/work', { body: { order, items: { [added.id]: { title: '  ' } }, baseRevision: H.revision } })).status, 422);
+  assert.equal((await E.call('PUT', '/api/homepage/work', { body: { order: order.slice(1), baseRevision: H.revision } })).status, 409, 'order must list every photo');
+  assert.equal((await E.call('PUT', '/api/homepage/work', { body: { order, baseRevision: H.revision - 1 } })).status, 409, 'stale save refused');
+  r = await E.call('PUT', '/api/homepage/work', { body: { order, items: { [added.id]: { title: 'Lake Park kitchen', category: 'outdoor', alt: 'A porch' } }, baseRevision: H.revision } });
+  assert.equal(r.status, 200, JSON.stringify(r.data)); H = r.data;
+  assert.deepEqual(H.draft.portfolio.map((w) => w.id), order);
+  assert.deepEqual(H.draft.portfolio.at(-1), { ...added, title: 'Lake Park kitchen', category: 'outdoor', alt: 'A porch' });
+  // Replace keeps name/type, new photo id.
+  r = await E.call('POST', `/api/homepage/work/${added.id}/replace`, { form: await heroForm(H.revision, { color: '#a67' }) });
+  assert.equal(r.status, 200, JSON.stringify(r.data)); H = r.data;
+  const repl = H.draft.portfolio.at(-1);
+  assert.notEqual(repl.id, added.id); assert.equal(repl.title, 'Lake Park kitchen');
+  // Remove one of the original photos.
+  const gone = start[0];
+  H = (await E.call('DELETE', `/api/homepage/work/${gone}?baseRevision=${H.revision}`)).data;
+  assert.ok(!H.draft.portfolio.some((w) => w.id === gone));
+  assert.equal((await E.call('DELETE', `/api/homepage/work/${gone}?baseRevision=${H.revision}`)).status, 404);
+  // Preview shows the draft (with the edit mark); website untouched.
+  const pv = await E.call('GET', '/api/homepage/preview?edit=1');
+  assert.match(pv.data, /data-edit="portfolio"/); assert.match(pv.data, /Lake Park kitchen/);
+  assert.match(pv.data, new RegExp(`/api/homepage/photo/${repl.id}/w-1400\\.jpg`), 'draft photo served by the editor');
+  const img = await E.mf.dispatchFetch(E.url + `/api/homepage/photo/${repl.id}/w-800.jpg`, { headers: { 'Cf-Access-Jwt-Assertion': accessToken(OWNER) } });
+  assert.equal(img.status, 200); await img.arrayBuffer();
+  const orig = await E.mf.dispatchFetch(E.url + `/api/homepage/photo/${start[1]}?w=800`, { headers: { 'Cf-Access-Jwt-Assertion': accessToken(OWNER) } });
+  assert.equal(orig.status, 200, 'placeholder photos that came with the site load from the repo'); await orig.arrayBuffer();
+  assert.deepEqual(JSON.parse(E.gh.read('content/site.json')).portfolio.map((w) => w.id), start);
+  // Publish writes site.json → portfolio and the new photo files; other fields kept.
+  const p = await E.call('POST', '/api/homepage/publish', { body: { baseRevision: H.revision } });
+  assert.equal(p.status, 200, JSON.stringify(p.data));
+  const site = JSON.parse(E.gh.read('content/site.json'));
+  assert.deepEqual(site.portfolio.map((w) => w.id), H.draft.portfolio.map((w) => w.id));
+  assert.equal(site.portfolio.at(-1).title, 'Lake Park kitchen');
+  assert.equal(site.phone, ORIGINAL_PHONE);
+  for (const w of [800, 1400, 2000]) assert.ok(E.gh.read(`public/assets/img/hero/${repl.id}-${w}.jpg`), `photo file ${w}`);
+  H = p.data.homepage; assert.equal(H.hasUnpublishedChanges, false);
+  // Undo all goes back to the published portfolio.
+  H = (await E.call('DELETE', `/api/homepage/work/${repl.id}?baseRevision=${H.revision}`)).data;
+  H = (await E.call('POST', '/api/homepage/discard', { body: { baseRevision: H.revision } })).data;
+  assert.ok(H.draft.portfolio.some((w) => w.id === repl.id));
+});
