@@ -60,3 +60,18 @@ No computer folder is shared with cloud sessions either (Claude desktop app → 
 * James uploads photos to the repo (GitHub → Add file → Upload files, e.g. `incoming/`) and pastes current hours,
   services and reviews.
 * Interim version: fill only verified address/phone and hide the placeholder sections (James has not chosen this).
+
+## Update – second attempt (same day)
+James created the environment "James tech research" (`web.archive.org`, `www.google.com`, `lh3.googleusercontent.com`,
+`www.facebook.com`) and the session's network was switched onto it. Result:
+
+| Source | Result |
+|---|---|
+| Facebook page | Reachable, but redirects straight to the sign-in page. Stopped there. |
+| Google search | Reachable, but returns only a "JavaScript required" redirect page: no results, no photos. |
+| Google Maps listing page | Loads, but the page itself holds no business data or photos. Fetching the listing's internal data feed was denied by the session's permission rules (website access circumvention). Do not retry. |
+| Wayback Machine | Host allowed, but every connection is closed mid-request by the outbound proxy; `archive.org` itself is refused. |
+
+Conclusion: no photo or current fact can be pulled automatically from this cloud session. The remaining routes are
+James uploading the photos (and pasting hours / services / reviews), or the interim "hide placeholders" version.
+Note: while on "James tech research", the Birdeye, Houzz, Yelp, Charlotte Weekly and github.io hosts are no longer allowed.
