@@ -25,6 +25,7 @@
         Array.prototype.forEach.call(works, function (li) {
           var on = f === 'all' || li.getAttribute('data-cat') === f;
           li.hidden = !on; if (on) shown++;
+          li.classList.remove('is-in'); if (on) { void li.offsetWidth; li.classList.add('is-in'); }
         });
         if (none) none.hidden = shown > 0;
       });
@@ -34,7 +35,9 @@
     var form = document.querySelector('[data-demo-form]');
     if (form) form.addEventListener('submit', function (e) {
       e.preventDefault();
+      form.classList.add('was-checked');
       if (!form.checkValidity()) { form.reportValidity(); return; }
+      form.classList.remove('was-checked');
       var msg = form.querySelector('[data-demo-msg]');
       if (msg) { msg.hidden = false; msg.classList.add('is-ok'); }
       form.reset();

@@ -10,6 +10,8 @@ import { portfolioCategories } from '../lib/portfolio.mjs';
 import { phoneHref } from './layout.mjs';
 
 const SERVICE_KEYS = ['1', '2', '3', '4'];
+const STAR = '<svg viewBox="0 0 20 20" width="18" height="18" focusable="false"><path d="M10 1.6l2.47 5.3 5.8.68-4.28 3.97 1.13 5.73L10 14.4l-5.12 2.88 1.13-5.73L1.73 7.58l5.8-.68z" fill="currentColor"/></svg>';
+const STARS = STAR.repeat(5);
 
 function hero(ctx) {
   const { site } = ctx;
@@ -28,7 +30,6 @@ function about(ctx) {
   <div class="wrap about__in">
     <div class="about__photo">${spotImage(ctx, 'marcie', { className: 'about__img', width: 450, height: 550, sizes: '(min-width: 900px) 420px, 80vw' })}</div>
     <div class="about__text">
-      <p class="about__place">${t(ctx, 'about.place')}</p>
       <h2 id="about-h">${t(ctx, 'site.aboutTitle')}</h2>
       ${site.about?.length ? tBlock(ctx, 'site.about') : ''}
     </div>
@@ -41,9 +42,9 @@ function services(ctx) {
   <div class="wrap">
     <h2 id="services-h" class="section-title">${t(ctx, 'services.title')}</h2>
     <p class="section-intro">${t(ctx, 'services.intro')}</p>
-    <ul class="services__grid">${SERVICE_KEYS.map((k) => `<li class="service">
-      <h3>${t(ctx, `services.${k}.title`)}</h3>
-      <p>${t(ctx, `services.${k}.body`)}</p>
+    <ul class="services__list">${SERVICE_KEYS.map((k) => `<li class="service">
+      <h3 class="service__name">${t(ctx, `services.${k}.title`)}</h3>
+      <p class="service__body">${t(ctx, `services.${k}.body`)}</p>
     </li>`).join('')}</ul>
     <p class="center"><a class="btn" href="#contact">${t(ctx, 'services.cta')}</a></p>
   </div>
@@ -56,7 +57,7 @@ function portfolio(ctx) {
   const own = ownedBy(ctx, 'portfolio');
   const card = (w) => `<li class="work" data-cat="${e(w.category)}">
       <figure>
-        <img src="${ctx.url(w.src)}-1400.jpg" srcset="${ctx.url(w.src)}-800.jpg 800w, ${ctx.url(w.src)}-1400.jpg 1400w, ${ctx.url(w.src)}-2000.jpg 2000w" sizes="(min-width: 1000px) 31vw, (min-width: 600px) 46vw, 92vw" width="800" height="600" alt="${e(w.alt || w.title)}" loading="lazy" decoding="async">
+        <div class="work__img"><img src="${ctx.url(w.src)}-1400.jpg" srcset="${ctx.url(w.src)}-800.jpg 800w, ${ctx.url(w.src)}-1400.jpg 1400w, ${ctx.url(w.src)}-2000.jpg 2000w" sizes="(min-width: 1000px) 31vw, (min-width: 600px) 46vw, 92vw" width="800" height="600" alt="${e(w.alt || w.title)}" loading="lazy" decoding="async"></div>
         <figcaption><span class="work__title"${own}>${e(w.title)}</span><span class="work__cat">${t(ctx, `portfolio.cat.${w.category}`)}</span></figcaption>
       </figure>
     </li>`;
@@ -90,7 +91,7 @@ function reviews(ctx, { id = 'reviews', level = 2, titleKey = 'reviews.title', m
   return `<section id="${id}" class="section reviews" aria-labelledby="${id}-h"${editMark(ctx, 'reviews', 'list', 'Reviews')}>
   <div class="wrap">
     <h${level} id="${id}-h" class="section-title">${t(ctx, titleKey)}</h${level}>
-    <p class="badge"><span class="badge__stars" aria-hidden="true">★★★★★</span> <span>${t(ctx, 'reviews.badge')}</span> <span class="badge__verify">${t(ctx, 'reviews.verify')}</span></p>
+    <p class="badge"><span class="badge__stars" aria-hidden="true">${STARS}</span> <span>${t(ctx, 'reviews.badge')}</span> <span class="badge__verify">${t(ctx, 'reviews.verify')}</span></p>
     <ul class="reviews__list">${list.map((r) => reviewSlot(ctx, r, level + 1)).join('')}</ul>
     ${max ? `<p class="center reviews__all"><a class="btn" href="${ctx.url(ctx.config.reviewsPath || '/reviews/')}">${t(ctx, 'reviews.all')}</a></p>` : ''}
   </div>

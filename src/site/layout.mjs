@@ -40,6 +40,7 @@ ${testingBanner(ctx)}
     <a class="brand" href="${url('/')}"><span class="brand__name">${t(ctx, 'site.name')}</span></a>
     <button class="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav">${t(ctx, 'layout.menu')}</button>
     <nav id="site-nav" class="site-nav" aria-label="Main"><ul>${items}</ul></nav>
+    ${site.phone ? `<a class="header-call" href="${e(phoneHref(site))}">${t(ctx, 'site.phone')}</a>` : ''}
   </div>
 </header>
 <main id="main">
