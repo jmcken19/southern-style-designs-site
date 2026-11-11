@@ -1,23 +1,31 @@
 {
-  "_comment": "Client reviews, copied word for word from the client's current site (or added by the owner in the editor). Never write or reword a client's words. 'excerptOnly: true' = the old site only showed a cut-off part.",
+  "_comment": "Real Google reviews only, copied word for word. These three are placeholders.",
   "items": [
     {
-      "slug": "example-review",
-      "title": "Example review \u2013 replace",
-      "client": "A.B.",
-      "date": "2026-01-15",
+      "slug": "review-placeholder-1",
+      "title": "Review placeholder 1",
+      "client": "[Reviewer name]",
+      "date": "2026-11-11",
       "text": [
-        "Replace with a real review copied word for word from the client's current website."
+        "Review placeholder — paste a real Google review here."
       ]
     },
     {
-      "slug": "second-example-review",
-      "title": "Second example review \u2013 replace",
-      "client": "C.D.",
-      "date": "2025-11-02",
-      "excerptOnly": true,
+      "slug": "review-placeholder-2",
+      "title": "Review placeholder 2",
+      "client": "[Reviewer name]",
+      "date": "2026-11-11",
       "text": [
-        "Replace with another real review. This one shows how a cut-off excerpt is marked."
+        "Review placeholder — paste a real Google review here."
+      ]
+    },
+    {
+      "slug": "review-placeholder-3",
+      "title": "Review placeholder 3",
+      "client": "[Reviewer name]",
+      "date": "2026-11-11",
+      "text": [
+        "Review placeholder — paste a real Google review here."
       ]
     }
   ]

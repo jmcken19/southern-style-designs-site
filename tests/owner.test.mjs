@@ -289,7 +289,7 @@ test('client reviews: arrange the order (file order = shown order); new go to th
   assert.equal(R.hasUnpublishedChanges, true, 'an order-only change is an unpublished change');
   assert.deepEqual(await pageOrder(), rev, 'the preview shows the draft order');
   const rpv = await E.call('GET', '/api/reviews/preview');
-  const hrefOrder = [...new Set([...rpv.data.matchAll(/href="[^"]*\/([a-z0-9-]+)\/"/g)].map((m) => m[1]).filter((x) => start.includes(x)))];
+  const hrefOrder = [...new Set([...rpv.data.matchAll(/href="[^"]*\/([a-z0-9-]+)\/"|data-review="([a-z0-9-]+)"/g)].map((m) => m[1] || m[2]).filter((x) => start.includes(x)))]; // CLIENT: data-review = this site's review slots
   assert.deepEqual(hrefOrder, rev, 'the reviews preview shows the draft order too');
   assert.deepEqual(fileSlugs(), start, 'website unchanged until Publish');
   // Undo (discard) puts the published order back.

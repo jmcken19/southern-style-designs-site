@@ -1,12 +1,13 @@
 {
   "_comment": "Per-client setup. Fill in with `npm run new-client` (scripts/new-client.mjs), then adjust by hand. See docs/PLAYBOOK.md.",
+  "concept": true,
   "client": {
     "slug": "southern-style-designs",
     "name": "Southern Style Designs"
   },
   "domain": {
-    "main": "www.example.com",
-    "apex": "example.com"
+    "main": "",
+    "apex": ""
   },
   "github": {
     "repo": "jmcken19/southern-style-designs-site",
@@ -29,23 +30,64 @@
   "features": {
     "slideshow": true,
     "reviews": true,
-    "contactForm": true
+    "contactForm": false
   },
   "reviewsPath": "/reviews/",
-  "themeColor": "#1f2a44",
+  "themeColor": "#2e2a25",
   "photoSpots": {
-    "headshot": {
-      "label": "Your photo",
-      "where": "About page",
-      "page": "/about/",
+    "marcie": {
+      "label": "Photo of Marcie",
+      "where": "About Marcie section",
+      "page": "/",
       "minEdge": 500,
       "tip": "A portrait (taller than wide) photo looks best.",
       "newAlt": "Marcie Padgett",
       "defaults": {
-        "small": "/assets/img/placeholder-portrait.jpg",
-        "large": "/assets/img/placeholder-portrait.jpg",
-        "alt": "Marcie Padgett"
+        "small": "/assets/img/portrait-800.jpg",
+        "large": "/assets/img/portrait-1400.jpg",
+        "alt": "[Photo of Marcie Padgett]"
       }
     }
-  }
+  },
+  "nav": [
+    {
+      "href": "/#about",
+      "key": "about"
+    },
+    {
+      "href": "/#services",
+      "key": "services"
+    },
+    {
+      "href": "/#portfolio",
+      "key": "portfolio"
+    },
+    {
+      "href": "/#reviews",
+      "key": "reviews"
+    },
+    {
+      "href": "/#contact",
+      "key": "contact"
+    }
+  ],
+  "portfolioCategories": [
+    {
+      "key": "living",
+      "label": "Living"
+    },
+    {
+      "key": "kitchen",
+      "label": "Kitchen"
+    },
+    {
+      "key": "bedroom",
+      "label": "Bedroom"
+    },
+    {
+      "key": "outdoor",
+      "label": "Outdoor"
+    }
+  ],
+  "_concept": "concept: true = private spec/demo site: noindex on every build, concept banner. Remove both before a real launch."
 }

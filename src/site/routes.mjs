@@ -1,23 +1,13 @@
 // THE PAGE LIST – one place that says which pages exist. Used by the website build AND by the
 // editor's Preview, so a client's pages are defined only once.
-// When rebuilding a client's site, list their pages here using their OLD addresses (paths).
+// Southern Style Designs is a one-page site (sections on "/"), plus a reviews list page.
 import { layout } from './layout.mjs';
 import * as P from './pages.mjs';
 
 /** Every page of the site: { path, title, description?, render(ctx) }. */
 export function routes(ctx) {
-  const reviewsPath = ctx.config.reviewsPath || '/reviews/';
-  const list = [
-    { path: '/', title: 'Home', render: P.homePage },
-    { path: '/about/', title: 'About', render: P.aboutPage },
-    { path: '/contact/', title: 'Contact', render: P.contactPage },
-  ];
-  if (ctx.config.features?.reviews !== false) {
-    list.push({ path: reviewsPath, title: 'Reviews', render: P.reviewsPage });
-    for (const t of ctx.reviews || []) {
-      list.push({ path: `${reviewsPath}${t.slug}/`, title: t.title, description: t.text[0].slice(0, 150), render: (c) => P.reviewPage(c, t), inSitemap: true });
-    }
-  }
+  const list = [{ path: '/', title: 'Home', render: P.homePage }];
+  if (ctx.config.features?.reviews !== false) list.push({ path: ctx.config.reviewsPath || '/reviews/', title: 'Reviews', render: P.reviewsPage });
   return list;
 }
 

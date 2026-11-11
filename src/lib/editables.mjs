@@ -15,6 +15,7 @@ export const EDIT_KINDS = {
   photo: { what: 'A photo' },
   reviews: { what: 'Client reviews' },
   review: { what: 'One review' },
+  portfolio: { what: 'Portfolio photos' },
   text: { what: 'Words on the page' }, // drawn by t() / tBlock() / tList() in src/lib/text.mjs – every visible word
   // Planned (not built yet): video, videos, hours, team …
 };

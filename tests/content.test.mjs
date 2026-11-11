@@ -40,9 +40,10 @@ test('live build: every page, sitemap, robots, version.json, no testing banner, 
   const other = pages.find((r) => r.path !== '/').path; // e.g. /about/
   const home = await b.read('index.html');
   assert.doesNotMatch(home, /preview-bar/);
-  assert.doesNotMatch(home, /noindex/);
+  // CLIENT (concept site): client.config.json → concept = true keeps noindex on every build.
+  if (CONFIG.concept) assert.match(home, /noindex/); else assert.doesNotMatch(home, /noindex/);
   assert.doesNotMatch(home, /data-edit=/, 'the real website never carries edit marks');
-  if (REVIEWS_ON && reviews.length) assert.match(home, /data-marquee/, 'reviews row on the homepage');
+  if (REVIEWS_ON && reviews.length) assert.match(home, /data-marquee|data-review=/, 'reviews on the homepage');
   if (!REVIEWS_ON) assert.doesNotMatch(home, new RegExp(`href="${config.reviewsPath || '/reviews/'}"`), 'no menu link to reviews that are switched off');
   if (CONFIG.features?.contactForm !== false && site.contactFormTo && existsSync(join(b.out, 'contact/index.html'))) {
     assert.match(await b.read('contact/index.html'), /data-cform[\s\S]*?type="submit">/);
@@ -61,7 +62,7 @@ test('testing build: banner, noindex, contact form switched off, paths under the
   const home = await b.read('index.html');
   assert.match(home, /preview-bar/);
   assert.match(home, /noindex/);
-  assert.match(home, /href="\/acme-site\/[a-z0-9-]+\/"/, 'links are under the repo name');
+  assert.match(home, /href="\/acme-site\/([a-z0-9-]+\/|#[a-z]+)"/, 'links are under the repo name'); // CLIENT: one-page site, menu = /acme-site/#section
   if (CONFIG.features?.contactForm !== false && existsSync(join(b.out, 'contact/index.html')) && /data-cform/.test(await b.read('contact/index.html'))) assert.match(await b.read('contact/index.html'), /switched off[\s\S]*disabled>Send message/);
   assert.match(await b.read('robots.txt'), /Disallow: \//);
   await b.done();
@@ -78,7 +79,7 @@ test('reviews show in the order of the reviews file (the owner arranges it), on 
   // Deliberately not sorted by date: the file order must win.
   const reviews = [['b-old', '2019-05-05'], ['a-new', '2025-01-01'], ['c-mid', '2022-03-03']].map(([slug, date]) => ({ slug, title: `Title ${slug}`, date, text: [`Words of ${slug}.`] }));
   const ctx = { site, config: CONFIG, text: TEXT, reviews, preview: false, siteUrl: '', buildId: 'test', url: (p) => p };
-  const cardOrder = (html) => [...html.matchAll(/<article class="tcard"[\s\S]*?href="[^"]*\/([a-z-]+)\/"/g)].map((m) => m[1]);
+  const cardOrder = (html) => [...html.matchAll(/<article class="tcard"[\s\S]*?href="[^"]*\/([a-z-]+)\/"|data-review="([a-z-]+)"/g)].map((m) => m[1] || m[2]); // CLIENT: data-review = this site's review slots
   const listed = routes(ctx).map((r) => r.path).filter((p) => cardOrder(renderPath(ctx, p)).length >= 2);
   assert.ok(listed.includes(CONFIG.reviewsPath || '/reviews/'), 'the reviews page lists the reviews');
   for (const p of listed) assert.deepEqual(cardOrder(renderPath(ctx, p)), ['b-old', 'a-new', 'c-mid'], `file order on ${p}`);

@@ -1,30 +1,96 @@
 {
-  "_comment": "Business details + what the owner edits in the editor (heroSlides…, photos). Copy wording from the client's current site – never invent facts.",
+  "_comment": "Business details + what the owner edits in the editor. ONLY confirmed facts; anything in [brackets] is a placeholder to replace.",
   "name": "Southern Style Designs",
-  "legalName": "Example Business LLC",
-  "tagline": "Replace with the tagline from the client's current site",
-  "metaDescription": "Replace with a one-sentence description of the business.",
+  "tagline": "[One-line tagline in Marcie’s words]",
+  "metaDescription": "Concept preview of a website for Southern Style Designs, an interior designer in Waxhaw, NC.",
   "phone": "(704) 843-4438",
-  "email": "owner@example.com",
-  "address": "",
-  "hours": "",
-  "homeIntro": [
-    "Replace with the intro text from the client's current homepage."
-  ],
-  "aboutTitle": "About",
+  "address": "2416 Providence Rd. S., Waxhaw, NC [confirm address]",
+  "hours": "[Hours – confirm with Marcie]",
+  "aboutTitle": "About Marcie",
   "about": [
-    "Replace with the client's About text (their words)."
+    "Marcie Padgett is the designer behind Southern Style Designs in Waxhaw, NC. She is from Union County and has about 10 years in the interior design business.",
+    "Those years include time with a brick-and-mortar store.",
+    "[Add a few sentences in Marcie’s own words: how she works, what she loves designing, who she works with.]"
   ],
-  "contactFormTo": "owner@example.com",
   "heroSlides": [
     {
       "id": "s-hero1",
       "src": "/assets/img/hero-1",
-      "alt": "Replace with a description of the photo",
+      "alt": "[Room photo 1] placeholder – replace with one of Marcie’s rooms",
+      "focus": "50% 50%"
+    },
+    {
+      "id": "s-hero2",
+      "src": "/assets/img/hero-2",
+      "alt": "[Room photo 2] placeholder – replace with one of Marcie’s rooms",
+      "focus": "50% 50%"
+    },
+    {
+      "id": "s-hero3",
+      "src": "/assets/img/hero-3",
+      "alt": "[Room photo 3] placeholder – replace with one of Marcie’s rooms",
       "focus": "50% 50%"
     }
   ],
   "heroSlideSeconds": 7,
-  "heroFade": false,
-  "heroAutoplay": true
+  "heroFade": true,
+  "heroAutoplay": true,
+  "portfolio": [
+    {
+      "id": "s-work1",
+      "src": "/assets/img/work-1",
+      "category": "living",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – living room"
+    },
+    {
+      "id": "s-work2",
+      "src": "/assets/img/work-2",
+      "category": "kitchen",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – kitchen"
+    },
+    {
+      "id": "s-work3",
+      "src": "/assets/img/work-3",
+      "category": "bedroom",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – bedroom"
+    },
+    {
+      "id": "s-work4",
+      "src": "/assets/img/work-4",
+      "category": "outdoor",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – outdoor space"
+    },
+    {
+      "id": "s-work5",
+      "src": "/assets/img/work-5",
+      "category": "living",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – living room"
+    },
+    {
+      "id": "s-work6",
+      "src": "/assets/img/work-6",
+      "category": "kitchen",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – kitchen"
+    },
+    {
+      "id": "s-work7",
+      "src": "/assets/img/work-7",
+      "category": "bedroom",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – bedroom"
+    },
+    {
+      "id": "s-work8",
+      "src": "/assets/img/work-8",
+      "category": "outdoor",
+      "title": "[Project name]",
+      "alt": "[Project photo] placeholder – outdoor space"
+    }
+  ]
 }

@@ -13,6 +13,7 @@ import { execSync } from 'node:child_process';
 import { validateSlideshow, validateReviewsPath, HERO_SIZES } from '../src/lib/core.mjs';
 import { sitePhoto, validatePhotos, validateSpotConfig } from '../src/lib/photos.mjs';
 import { validateText } from '../src/lib/text.mjs';
+import { validatePortfolio } from '../src/lib/portfolio.mjs';
 import { redirectPage } from '../src/parts/index.mjs';
 import { routes, renderRoute, notFoundHtml } from '../src/site/routes.mjs';
 
@@ -42,6 +43,10 @@ export async function loadContent() {
   problems.push(...validateSlideshow(site));
   problems.push(...validatePhotos(site, config.photoSpots));
   problems.push(...validateText(text, site));
+  problems.push(...validatePortfolio(site, config));
+  for (const w of site.portfolio || []) for (const s of HERO_SIZES) {
+    if (!existsSync(join(root, 'public', `${w.src}-${s}.jpg`))) problems.push(`missing portfolio image public${w.src}-${s}.jpg`);
+  }
   for (const s of site.heroSlides || []) for (const w of HERO_SIZES) {
     if (!existsSync(join(root, 'public', `${s.src}-${w}.jpg`))) problems.push(`missing slideshow image public${s.src}-${w}.jpg`);
   }
